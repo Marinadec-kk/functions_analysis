@@ -1,0 +1,10 @@
+pandas
+python-docx
+torch
+numpy
+scipy
+httpx
+tenacity
+python-dotenv
+pypiwin32
+httpx
