@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Справка — Радиальный граф коллизий и иерархии</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f172a;          /* slate-900 */
+      --panel:#111827;       /* gray-900 */
+      --panel-2:#0b1220;
+      --ink:#e5e7eb;         /* gray-200 */
+      --muted:#9ca3af;       /* gray-400 */
+      --accent:#ef4444;      /* red-500 */
+      --accent-2:#fca5a5;    /* red-300 */
+      --ok:#10b981;          /* emerald-500 */
+      --line:#374151;        /* gray-700 */
+      --hier:#6b7280;        /* gray-500 */
+      --ring:#1f2937;        /* gray-800 */
+      --chip:#1f2937;
+      --chip-border:#374151;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    html,body{height:100%}
+    body{
+      margin:0;
+      background:radial-gradient(1200px 800px at 30% -10%, #12233f 0%, #0f172a 45%, #0b1220 100%);
+      color:var(--ink);
+      font:400 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial;
+      overflow:hidden;
+    }
+
+    header{
+      position:fixed; inset:0 auto auto 0; right:0;
+      display:flex; align-items:center; gap:16px;
+      padding:12px 16px; z-index:5; background:linear-gradient(180deg, rgba(17,24,39,.92), rgba(17,24,39,.64), rgba(17,24,39,0));
+      backdrop-filter: blur(6px);
+      border-bottom:1px solid rgba(255,255,255,.05);
+    }
+    header h1{
+      margin:0; font-weight:600; font-size:16px; letter-spacing:.2px;
+    }
+    header .meta{color:var(--muted); font-size:12px}
+    .legend{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .legend .item{display:flex; align-items:center; gap:8px; padding:4px 8px; border-radius:999px; background:var(--chip); border:1px solid var(--chip-border); color:#cbd5e1}
+    .legend .line{width:28px; height:0; border-top:2px solid var(--hier)}
+    .legend .line.red{border-top:4px solid var(--accent)}
+    .legend .node{display:inline-flex; align-items:center; gap:6px}
+    .legend .node .dot{width:10px; height:10px; border-radius:999px; background:#93c5fd; display:inline-block}
+    .legend small{color:#9ca3af}
+    .controls{
+      margin-left:auto; display:flex; align-items:center; gap:10px;
+    }
+    .controls label{color:#cbd5e1; font-size:12px}
+    .controls input[type="range"]{height:4px}
+
+    #graph{
+      position:absolute; inset:56px 0 0 0;
+    }
+
+    .tooltip{
+      position:fixed; pointer-events:none; z-index:6;
+      background:#111827; color:#e5e7eb; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.08);
+      box-shadow: var(--shadow); font-size:12px; line-height:1.3;
+      opacity:0; transform:translate(-50%,-120%);
+      max-width:340px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden;
+    }
+
+    .ring-label{
+      font-size:12px; fill:#7f8ea3; user-select:none;
+    }
+
+    .node text{ pointer-events: none; font-size:11px; fill:#cbd5e1; text-anchor:middle; dominant-baseline:hanging; }
+    .node circle{ stroke:#0b1220; stroke-width:1.25px; }
+    .node .lvl{ font-weight:600; fill:#9ca3af; display:none }
+
+    .link.hier{ stroke:var(--hier); stroke-opacity:.5 }
+    .link.coll{ stroke:var(--accent); stroke-linecap:round; }
+
+    .faded{ opacity:.08 }
+
+    dialog{
+      color:#e5e7eb; border:none; border-radius:16px; padding:0; background:var(--panel);
+      box-shadow: var(--shadow); width:min(1000px, 92vw);
+    }
+    dialog::backdrop{ background:rgba(2,6,23,.6); backdrop-filter: blur(3px); }
+    .modal{
+      display:grid; grid-template-rows:auto 1fr auto; max-height:82vh;
+    }
+    .modal header{
+      position:sticky; inset:auto 0 auto 0; background:var(--panel); padding:16px 18px; border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex; align-items:flex-start; gap:10px;
+    }
+    .modal header h2{margin:0; font-size:18px}
+    .modal header .sub{ color:#9ca3af; font-size:12px }
+    .modal .content{ overflow:auto; padding:16px 18px }
+    .modal footer{ padding:12px 18px; border-top:1px solid rgba(255,255,255,.06); display:flex; justify-content:flex-end; gap:10px }
+    .btn{ background:#1f2937; color:#e5e7eb; padding:8px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.06); cursor:pointer }
+    .btn.accent{ background:#991b1b; border-color:#dc2626 }
+    .btn:focus{ outline:2px solid #60a5fa; outline-offset:2px }
+
+    .grid{ display:grid; gap:12px }
+    .grid.cols-3{ grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .grid.cols-2{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .card{
+      background: var(--panel-2); border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px;
+    }
+    .card h3{ margin:0 0 8px 0; font-size:14px; color:#cbd5e1; }
+    .stat-list{ font-size:13px; color:#cbd5e1 }
+    .stat-list li{ display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px dashed rgba(255,255,255,.06) }
+    .stat-list li:last-child{ border-bottom:none }
+    .pill{display:inline-flex; align-items:center; gap:6px; padding:4px 8px; background:#1f2937; border:1px solid rgba(255,255,255,.06); border-radius:999px; font-size:12px}
+    .pill .dot{ width:8px; height:8px; border-radius:999px; background:#60a5fa }
+    .coll-list a{ color:#fca5a5; text-decoration: none; }
+    .coll-list a:hover{ text-decoration: underline; }
+    .pair{
+      display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;
+      border-bottom:1px dashed rgba(255,255,255,.08); padding-bottom:12px
+    }
+    .pair .func{ background:#0b1220; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:8px 10px; }
+    .pair .func h4{ margin:0 0 6px 0; font-size:12px; color:#93c5fd }
+    .pair .func p{ margin:0; font-size:13px; color:#e5e7eb; white-space:pre-wrap }
+    .muted{ color:#9ca3af }
+    .sep{ height:1px; background:rgba(255,255,255,.06); margin:8px 0 }
+    .kbd{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      background:#0b1220; border:1px solid rgba(255,255,255,.12); padding:1px 6px; border-radius:6px; font-size:12px; color:#cbd5e1
+    }
+    .hint{ color:#94a3b8; font-size:12px }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Радиальный граф: Иерархия исполнителей и функциональные коллизии</h1>
+    <div class="meta">Данные: <code>database.json</code></div>
+    <div class="legend">
+      <div class="item"><span class="line"></span> Иерархическая связь</div>
+      <div class="item"><span class="line red"></span> Коллизионная связь</div>
+      <div class="item"><span class="node"><span class="dot"></span> Узел — Исполнитель <small>(радиус ∝ числу функций)</small></span></div>
+    </div>
+
+    <div class="controls">
+      <label for="minW">Мин. вес коллизии: <span id="minWLabel">1</span></label>
+      <input id="minW" type="range" min="1" max="10" value="1" step="1" />
+      <label><input type="checkbox" id="toggleHier" checked /> показать иерархию</label>
+      <label><input type="checkbox" id="toggleColl" checked /> показать коллизии</label>
+    </div>
+  </header>
+
+  <div id="graph"></div>
+  <div class="tooltip" id="tip"></div>
+
+  <!-- Модал: Портрет исполнителя -->
+  <dialog id="nodeModal">
+    <form method="dialog" class="modal">
+      <header>
+        <div>
+          <h2 id="nm-title">Портрет исполнителя</h2>
+          <div class="sub" id="nm-sub"></div>
+        </div>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:8px">
+          <span class="hint">Нажмите <span class="kbd">Esc</span> для закрытия</span>
+          <button class="btn" value="cancel">Закрыть</button>
+        </div>
+      </header>
+      <div class="content">
+        <div class="grid cols-3">
+          <div class="card">
+            <h3>Сводка</h3>
+            <ul class="stat-list" id="nm-stats"></ul>
+          </div>
+          <div class="card">
+            <h3>Типы функций</h3>
+            <ul class="stat-list" id="nm-types"></ul>
+          </div>
+          <div class="card">
+            <h3>Сферы (Sphere_3)</h3>
+            <ul class="stat-list" id="nm-spheres"></ul>
+          </div>
+        </div>
+        <div class="sep"></div>
+        <div class="card">
+          <h3>Коллизии исполнителя</h3>
+          <div id="nm-colls" class="coll-list"></div>
+          <p class="hint" style="margin-top:8px">Клик по ссылке откроет полные детали коллизии.</p>
+        </div>
+      </div>
+      <footer>
+        <button class="btn" value="cancel">Закрыть</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Модал: Детали коллизии -->
+  <dialog id="edgeModal">
+    <form method="dialog" class="modal">
+      <header>
+        <div>
+          <h2 id="em-title">Детали коллизии</h2>
+          <div class="sub" id="em-sub"></div>
+        </div>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:8px">
+          <span class="hint">Нажмите <span class="kbd">Esc</span> для закрытия</span>
+          <button class="btn" value="cancel">Закрыть</button>
+        </div>
+      </header>
+      <div class="content">
+        <div id="em-pairs"></div>
+      </div>
+      <footer>
+        <button class="btn" value="cancel">Закрыть</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- D3.js из CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script>
+  (function(){
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+    const fmt = new Intl.NumberFormat('ru-RU');
+
+    const state = {
+      data: null,
+      nodes: [],
+      nodeByName: new Map(),
+      linksHier: [],
+      linksColl: [],
+      collPairsByEdgeKey: new Map(), // key "A|||B" -> [{aID,aText,bID,bText}]
+      minWeight: 1
+    };
+
+    // Пытаемся загрузить database.json из той же папки
+    fetch('database.json')
+      .then(r => {
+        if(!r.ok) throw new Error('Не удалось загрузить database.json: ' + r.status);
+        return r.json();
+      })
+      .then(db => init(db))
+      .catch(err => {
+        console.error(err);
+        const div = document.createElement('div');
+        div.style.position = 'absolute';
+        div.style.inset = '56px 0 0 0';
+        div.style.display = 'grid';
+        div.style.placeItems = 'center';
+        div.innerHTML = `
+          <div style="background:#111827;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:18px;max-width:840px">
+            <h3 style="margin:0 0 8px 0;color:#e5e7eb">Не удалось автоматически загрузить <code>database.json</code></h3>
+            <p class="muted">Поместите файл <code>database.json</code> рядом с этим HTML и откройте страницу через локальный сервер, либо загрузите файл вручную ниже.</p>
+            <input id="fileInput" type="file" accept=".json,application/json" />
+          </div>`;
+        document.body.appendChild(div);
+        $('#fileInput').addEventListener('change', e=>{
+          const file = e.target.files[0];
+          if(!file) return;
+          const reader = new FileReader();
+          reader.onload = ev => {
+            try{ const db = JSON.parse(ev.target.result); init(db); div.remove(); }
+            catch(e){ alert('Ошибка чтения JSON: ' + e.message); }
+          };
+          reader.readAsText(file, 'utf-8');
+        });
+      });
+
+    function init(db){
+      state.data = db;
+      const funcDict = db.functions || {};
+      const funcs = Object.values(funcDict);
+
+      // Индекс по ID
+      const byID = new Map(funcs.map(f => [String(f.ID).trim(), f]));
+      // Вспомогательные агрегаты
+      const addNode = (name) => {
+        if(!state.nodeByName.has(name)){
+          state.nodeByName.set(name, {
+            id: name,
+            name,
+            levelVotes: [],
+            parentVotes: [],
+            count: 0,
+            types: new Map(),
+            spheres: new Map(),
+            functions: []
+          });
+        }
+        return state.nodeByName.get(name);
+      };
+
+      // Обход функций
+      funcs.forEach(f=>{
+        const exec = String(f['Исполняющий ГО']).trim();
+        const parent = String(f['Вышестоящий ГО']||'').trim();
+        const level = +f['Level'] || null;
+        const typ = (f['Type']||'').trim() || '—';
+        const sph = (f['Sphere_3']||f['Sphere']||'').trim() || '—';
+
+        const node = addNode(exec);
+        node.count += 1;
+        node.functions.push(f);
+        if(level) node.levelVotes.push(level);
+        if(parent) node.parentVotes.push(parent);
+        node.types.set(typ, (node.types.get(typ)||0)+1);
+        node.spheres.set(sph, (node.spheres.get(sph)||0)+1);
+      });
+
+      // Финализируем уровни и родителей
+      const voteMode = (arr) => {
+        if(!arr || !arr.length) return null;
+        const m = new Map();
+        arr.forEach(v => m.set(v, (m.get(v)||0)+1));
+        let bestK=null, bestV=-1;
+        m.forEach((v,k)=>{ if(v>bestV) {bestV=v; bestK=k;} });
+        return bestK;
+      };
+
+      for(const node of state.nodeByName.values()){
+        node.level = voteMode(node.levelVotes) ?? 8;
+        const parentName = voteMode(node.parentVotes);
+        node.parent = (parentName && parentName!==node.name) ? parentName : null;
+        // Обеспечим наличие родителя как узла
+        if(node.parent) addNode(node.parent);
+      }
+
+      // Создаем список узлов
+      state.nodes = Array.from(state.nodeByName.values());
+
+      // Иерархические связи
+      const seenHier = new Set();
+      state.nodes.forEach(n=>{
+        if(n.parent){
+          const key = n.name + '→' + n.parent;
+          if(!seenHier.has(key)){
+            seenHier.add(key);
+            state.linksHier.push({source: n.name, target: n.parent, type:'hier'});
+          }
+        }
+      });
+
+      // Коллизионные связи (агрегируем по парам исполнителей)
+      const seenFuncPairs = new Set();
+      const pairMap = new Map(); // key "A|||B" -> link
+      const normPairKey = (a,b) => {
+        const A = String(a).trim(), B = String(b).trim();
+        return (A < B) ? A + '|||' + B : B + '|||' + A;
+      };
+      funcs.forEach(f=>{
+        const listRaw = (f['CollisionWith']||'').trim();
+        if(!listRaw) return;
+        const ids = listRaw.split(/[,;]\s*/).map(s=>s.trim()).filter(Boolean);
+        ids.forEach(otherID=>{
+          const other = byID.get(otherID);
+          if(!other) return;
+          const fpKey = normPairKey(f.ID, other.ID);
+          if(seenFuncPairs.has(fpKey)) return; // не удваиваем
+          seenFuncPairs.add(fpKey);
+
+          const A = String(f['Исполняющий ГО']).trim();
+          const B = String(other['Исполняющий ГО']).trim();
+          if(A===B) return; // внутри одного исполнителя не считаем
+
+          const ek = normPairKey(A,B);
+          if(!pairMap.has(ek)){
+            pairMap.set(ek, {source:A, target:B, type:'coll', weight:0});
+          }
+          const link = pairMap.get(ek);
+          link.weight += 1;
+
+          // запомним пары для модала
+          if(!state.collPairsByEdgeKey.has(ek)) state.collPairsByEdgeKey.set(ek, []);
+          state.collPairsByEdgeKey.get(ek).push({
+            aExec: A, aID: f.ID, aText: (f.FunctionText||'').trim(),
+            bExec: B, bID: other.ID, bText: (other.FunctionText||'').trim()
+          });
+        });
+      });
+      state.linksColl = Array.from(pairMap.values());
+
+      buildGraph();
+    }
+
+    function buildGraph(){
+      const container = d3.select('#graph');
+      container.selectAll('*').remove();
+
+      const W = container.node().clientWidth || window.innerWidth;
+      const H = container.node().clientHeight || (window.innerHeight - 56);
+      const cx = W/2, cy = H/2;
+
+      const svg = container.append('svg')
+        .attr('width', W)
+        .attr('height', H);
+
+      const root = svg.append('g');
+
+      // Zoom & pan
+      svg.call(d3.zoom()
+        .extent([[0,0],[W,H]])
+        .scaleExtent([0.25, 4])
+        .on('zoom', (ev)=> root.attr('transform', ev.transform)));
+
+      // Ринги уровней
+      const levels = Array.from(new Set(state.nodes.map(n=>n.level))).sort((a,b)=>a-b);
+      const idxByLevel = new Map(levels.map((lvl,i)=>[lvl,i]));
+      const minR = 80;
+      const ringStep = Math.min(W,H) / (2 * (levels.length + 1));
+      const radiusForLevel = (lvl) => minR + (idxByLevel.get(lvl)||0)*ringStep;
+
+      const ringG = root.append('g');
+      levels.forEach(lvl=>{
+        ringG.append('circle')
+          .attr('cx', cx).attr('cy', cy).attr('r', radiusForLevel(lvl))
+          .attr('fill', 'none').attr('stroke', getCSS('--ring')).attr('stroke-opacity', .6).attr('stroke-dasharray', '2,6');
+        ringG.append('text')
+          .attr('x', cx).attr('y', cy - radiusForLevel(lvl) - 6)
+          .attr('class', 'ring-label')
+          .attr('text-anchor', 'middle')
+          .text(`Level ${lvl}`);
+      });
+
+      // Масштабы
+      const countExtent = d3.extent(state.nodes, d=>d.count);
+      const rScale = d3.scaleSqrt().domain(countExtent).range([6, 24]);
+      const maxW = d3.max(state.linksColl, d=>d.weight) || 1;
+      // Обновим ползунок по максимуму веса
+      const minWEl = document.getElementById('minW');
+      const minWLabelEl = document.getElementById('minWLabel');
+      minWEl.max = String(Math.max(1, maxW));
+      if (state.minWeight > maxW){ state.minWeight = Math.max(1, maxW); }
+      minWEl.value = String(state.minWeight);
+      minWLabelEl.textContent = String(state.minWeight);
+
+      const wScale = d3.scaleSqrt().domain([1, maxW]).range([1.5, 6]);
+      const oScale = d3.scaleLinear().domain([1, maxW]).range([.35, .9]);
+
+      // Слои
+      const linkHierG = root.append('g').attr('stroke-linecap', 'round');
+      const linkCollG = root.append('g').attr('stroke-linecap', 'round');
+      const nodeG     = root.append('g');
+
+      // Рендер ссылок
+      const drawLinks = () => {
+        const minW = state.minWeight;
+        // Иерархические
+        const hier = linkHierG.selectAll('line.link.hier')
+          .data( $('#toggleHier').checked ? state.linksHier : [], d=>d.source + '→' + d.target );
+        hier.join(
+          enter=>enter.append('line').attr('class','link hier').attr('stroke-width',1),
+          update=>update,
+          exit=>exit.remove()
+        );
+
+        // Коллизионные
+        const coll = linkCollG.selectAll('line.link.coll')
+          .data( $('#toggleColl').checked ? state.linksColl.filter(d=>d.weight>=minW) : [], d=>d.source + '|||' + d.target );
+        coll.join(
+          enter=>enter.append('line')
+            .attr('class','link coll')
+            .attr('stroke', getCSS('--accent'))
+            .attr('stroke-opacity', d=>oScale(d.weight))
+            .attr('stroke-width', d=>wScale(d.weight))
+            .on('click', (ev,d)=> openCollisionModal(d)),
+          update=>update
+            .attr('stroke-opacity', d=>oScale(d.weight))
+            .attr('stroke-width', d=>wScale(d.weight)),
+          exit=>exit.remove()
+        );
+      };
+
+      // Узлы
+      const simulation = d3.forceSimulation(state.nodes)
+        .force('center', d3.forceCenter(cx, cy))
+        .stop()
+        .force('charge', d3.forceManyBody().strength(-40))
+        .force('collide', d3.forceCollide().radius(d=>Math.max(6, rScale(d.count)) + 3).iterations(2))
+        .force('radial', d3.forceRadial(d=>radiusForLevel(d.level), cx, cy).strength(.2))
+        .force('link-hier', d3.forceLink(state.linksHier).id(d=>d.id).distance(40).strength(.3));
+
+      drawLinks();
+const nodesSel = nodeG.selectAll('g.node')
+        .data(state.nodes, d=>d.id)
+        .join(enter=>{
+          const g = enter.append('g').attr('class','node').call(drag(simulation));
+
+          g.append('circle')
+            .attr('r', d=>Math.max(6, rScale(d.count)))
+            .attr('fill', '#93c5fd')
+            .attr('fill-opacity', .85)
+            .on('mouseenter', (ev,d)=> showTip(ev, `${d.name}`))
+            .on('mouseleave', hideTip)
+            .on('click', (_,d)=> openNodeModal(d));
+
+          g.append('text')
+            .attr('dy', d=>Math.max(10, rScale(d.count)+6))
+            .text(d=>d.name);
+
+          return g;
+        });
+
+      // Силовая симуляция
+      
+
+
+      simulation.on('tick', ()=>{
+        // Обновляем линии
+        linkHierG.selectAll('line.link.hier')
+          .attr('x1', d=>d.source.x).attr('y1', d=>d.source.y)
+          .attr('x2', d=>d.target.x).attr('y2', d=>d.target.y);
+
+        linkCollG.selectAll('line.link.coll')
+          .attr('x1', d=>state.nodeByName.get(d.source).x)
+          .attr('y1', d=>state.nodeByName.get(d.source).y)
+          .attr('x2', d=>state.nodeByName.get(d.target).x)
+          .attr('y2', d=>state.nodeByName.get(d.target).y);
+
+        // Узлы
+        if (typeof nodesSel !== 'undefined' && nodesSel) nodesSel.attr('transform', d=>`translate(${d.x},${d.y})`);
+      });
+
+      // Фильтры
+      $('#minW').addEventListener('input', (ev)=>{
+        state.minWeight = +ev.target.value;
+        $('#minWLabel').textContent = state.minWeight;
+        drawLinks();
+
+      });
+      $('#toggleHier').addEventListener('change', drawLinks);
+      $('#toggleColl').addEventListener('change', drawLinks);
+
+      // Запускаем симуляцию после инициализации узлов и связей
+      simulation.alpha(1).restart();
+
+      // Хелперы
+      function getCSS(varName){
+        return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+      }
+
+      function drag(sim){
+        function dragstarted(event, d) {
+          if (!event.active) sim.alphaTarget(0.2).restart();
+          d.fx = d.x; d.fy = d.y;
+        }
+        function dragged(event, d) {
+          d.fx = event.x; d.fy = event.y;
+        }
+        function dragended(event, d) {
+          if (!event.active) sim.alphaTarget(0);
+          d.fx = null; d.fy = null;
+        }
+        return d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended);
+      }
+    }
+
+    // ======== UI: Модалы ========
+
+    function openNodeModal(node){
+      $('#nm-title').textContent = node.name;
+      $('#nm-sub').textContent = `Уровень: ${node.level} • Функций: ${node.count}`;
+
+      // Сводка
+      const stats = [
+        ['Исполнитель', node.name],
+        ['Вышестоящий ГО', node.parent || '—'],
+        ['Уровень', String(node.level)],
+        ['Всего функций', String(node.count)]
+      ];
+      $('#nm-stats').innerHTML = stats.map(([k,v]) => `<li><span>${k}</span><strong>${escapeHTML(v)}</strong></li>`).join('');
+
+      // Типы
+      $('#nm-types').innerHTML = [...node.types.entries()]
+        .sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=> `<li><span>${escapeHTML(k)}</span><strong>${fmt.format(v)}</strong></li>`).join('');
+
+      // Сферы
+      $('#nm-spheres').innerHTML = [...node.spheres.entries()]
+        .sort((a,b)=>b[1]-a[1])
+        .slice(0, 12)
+        .map(([k,v])=> `<li><span>${escapeHTML(k)}</span><strong>${fmt.format(v)}</strong></li>`).join('');
+
+      // Коллизии с другими участниками
+      const collEdges = state.linksColl.filter(l => (l.source===node.name || l.target===node.name));
+      if(collEdges.length===0){
+        $('#nm-colls').innerHTML = `<span class="muted">Коллизии не обнаружены.</span>`;
+      } else {
+        $('#nm-colls').innerHTML = collEdges
+          .sort((a,b)=>b.weight-a.weight)
+          .map(edge=>{
+            const other = (edge.source===node.name) ? edge.target : edge.source;
+            const ek = normPairKey(edge.source, edge.target);
+            return `<div class="pill" style="margin:4px 6px 4px 0">
+                      <span class="dot"></span>
+                      <a href="#" data-edge="${ek}" onclick="return openCollisionByKey('${ek}')">
+                        ${escapeHTML(other)}
+                      </a>
+                      <span class="muted">(${edge.weight})</span>
+                    </div>`;
+          }).join('');
+      }
+
+      $('#nodeModal').showModal();
+    }
+
+    function openCollisionByKey(ek){
+      const parts = ek.split('|||');
+      const edge = state.linksColl.find(e => normPairKey(e.source, e.target)===ek);
+      if(edge) openCollisionModal(edge);
+      return false;
+    }
+    window.openCollisionByKey = openCollisionByKey;
+
+    function openCollisionModal(edge){
+      const A = edge.source, B = edge.target;
+      const ek = normPairKey(A,B);
+      const pairs = state.collPairsByEdgeKey.get(ek) || [];
+
+      $('#em-title').textContent = 'Детали коллизии';
+      $('#em-sub').textContent = `${A} ↔ ${B} • Всего пар: ${fmt.format(pairs.length)}`;
+
+      const html = pairs.map(p => {
+        return `<div class="pair">
+          <div class="func">
+            <h4>${escapeHTML(p.aExec)} — <code>${escapeHTML(p.aID)}</code></h4>
+            <p>${escapeHTML(p.aText || '—')}</p>
+          </div>
+          <div class="func">
+            <h4>${escapeHTML(p.bExec)} — <code>${escapeHTML(p.bID)}</code></h4>
+            <p>${escapeHTML(p.bText || '—')}</p>
+          </div>
+        </div>`;
+      }).join('') || `<p class="muted">Нет детализированных пар функций.</p>`;
+
+      $('#em-pairs').innerHTML = html;
+      $('#edgeModal').showModal();
+    }
+
+    // Утилиты
+    function escapeHTML(s){ return (s==null) ? '' : String(s).replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
+    function normPairKey(a,b){
+      a = String(a).trim(); b = String(b).trim();
+      return (a < b) ? a + '|||' + b : b + '|||' + a;
+    }
+    function showTip(ev, html){
+      const tip = $('#tip');
+      tip.innerHTML = html;
+      tip.style.left = ev.clientX + 'px';
+      tip.style.top = ev.clientY + 'px';
+      tip.style.opacity = 1;
+    }
+    function hideTip(){ const tip = $('#tip'); tip.style.opacity = 0; }
+
+  })();
+  </script>
+</body>
+</html>
