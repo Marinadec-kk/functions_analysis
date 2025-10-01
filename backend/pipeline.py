@@ -93,6 +93,32 @@ class FullAnalysisPipeline:
             if not loop.is_closed():
                 loop.close()
 
+    async def _run_stage(
+        self, stage_logic: Callable, stage_name: str, stage_num: int, total_stages: int
+    ) -> bool:
+        """
+        Выполняет один этап конвейера, инкапсулируя общую логику.
+        """
+        if self.stop_event.is_set():
+            self._handle_stop(stage_name)
+            return False
+
+        update_status(f"Этап {stage_num}/{total_stages}: {stage_name}...")
+        log_message(
+            f"Начало этапа {stage_num}/{total_stages}: {stage_name}...", level="info"
+        )
+
+        try:
+            await stage_logic()
+            return True  # Success
+        except Exception as e:
+            log_message(f"Ошибка на этапе {stage_num} ({stage_name}): {e}", level="error")
+            update_status(f"Конвейер завершен с ошибками на этапе {stage_name}: {e}")
+            self.ui_queue.put(
+                {"type": "pipeline_finished", "success": False, "error": str(e)}
+            )
+            return False  # Failure
+
     async def run_full_pipeline(self) -> bool:
         """
         Основная асинхронная логика полного конвейера анализа.
@@ -126,13 +152,10 @@ class FullAnalysisPipeline:
             )
             return False
 
-        # --- Этап 1: Парсинг документов ---
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Парсинг")
-            update_status("Этап 1/6: Парсинг документов...")
-            log_message("Начало этапа 1/6: Парсинг документов...", level="info")
+        total_stages = 6
 
+        # --- Определение логики для каждого этапа ---
+        async def stage1_parsing():
             parsing_output_file = self.config.get(
                 "parsing_output_file",
                 os.path.join(
@@ -146,73 +169,33 @@ class FullAnalysisPipeline:
                 status_callback=update_status,
             )
             if self.data.empty:
-                log_message(
-                    "Парсинг не дал результатов. Прерывание конвейера.", level="error"
-                )
-                update_status("Конвейер завершен с ошибками (парсинг).")
-                self.ui_queue.put(
-                    {
-                        "type": "pipeline_finished",
-                        "success": False,
-                        "error": "Parsing yielded no results",
-                    }
-                )
-                return False
+                # Генерируем исключение, которое будет поймано в _run_stage
+                raise ValueError("Парсинг не дал результатов (Parsing yielded no results)")
             log_message(
-                f"Этап 1/6: Парсинг завершен. Найдено {len(self.data)} функций.",
+                f"Этап 1/{total_stages}: Парсинг завершен. Найдено {len(self.data)} функций.",
                 level="info",
             )
-        except Exception as e:
-            log_message(f"Ошибка на этапе 1 (Парсинг документов): {e}", level="error")
-            update_status(f"Конвейер завершен с ошибками на этапе Парсинга: {e}")
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
 
-        # --- Этап 2: Классификация типов функций ---
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Классификация типов")
-            update_status("Этап 2/6: Классификация типов функций...")
-            log_message(
-                "Начало этапа 2/6: Классификация типов функций...", level="info"
-            )
+        async def stage2_classify_types():
             self.data = await classify_function_types(
                 functions_df=self.data,
                 config=self.config,
                 progress_callback=self._update_progress_wrapper,
                 status_callback=update_status,
-                stop_event=self.stop_event,  # Передаем stop_event
+                stop_event=self.stop_event,
             )
             log_message(
-                "Этап 2/6: Классификация типов функций завершена.", level="info"
+                f"Этап 2/{total_stages}: Классификация типов функций завершена.",
+                level="info",
             )
-        except Exception as e:
-            log_message(
-                f"Ошибка на этапе 2 (Классификация типов функций): {e}", level="error"
-            )
-            update_status(
-                f"Конвейер завершен с ошибками на этапе Классификации типов: {e}"
-            )
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
 
-        # --- Этап 3: Классификация сфер функций ---
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Классификация сфер")
-            update_status("Этап 3/6: Классификация сфер функций...")
-            log_message("Начало этапа 3/6: Классификация сфер функций...", level="info")
-
+        async def stage3_classify_spheres():
             spheres_definitions_file = self.config.get("spheres_definitions_file")
             if not spheres_definitions_file or not os.path.exists(
                 spheres_definitions_file
             ):
                 log_message(
-                    f"Файл определений сфер не найден: {spheres_definitions_file}. Пропускаем этап классификации сфер.",
+                    f"Файл определений сфер не найден: {spheres_definitions_file}. Пропускаем этап.",
                     level="warning",
                 )
                 update_status("Классификация сфер пропущена (файл не найден).")
@@ -227,89 +210,40 @@ class FullAnalysisPipeline:
                     config=self.config,
                     progress_callback=self._update_progress_wrapper,
                     status_callback=update_status,
-                    stop_event=self.stop_event,  # Передаем stop_event
+                    stop_event=self.stop_event,
                 )
-            log_message("Этап 3/6: Классификация сфер функций завершена.", level="info")
-        except Exception as e:
             log_message(
-                f"Ошибка на этапе 3 (Классификация сфер функций): {e}", level="error"
-            )
-            update_status(
-                f"Конвейер завершен с ошибками на этапе Классификации сфер: {e}"
-            )
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
-
-        # --- Этап 4: Группировка и поиск кандидатов на дубликаты ---\
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Группировка и поиск дубликатов")
-            update_status("Этап 4/6: Группировка и поиск кандидатов на дубликаты...")
-            log_message(
-                "Начало этапа 4/6: Группировка и поиск кандидатов на дубликаты...",
+                f"Этап 3/{total_stages}: Классификация сфер функций завершена.",
                 level="info",
             )
+
+        async def stage4_grouping():
             self.data = await group_and_find_candidates(
                 functions_df=self.data,
                 config=self.config,
                 progress_callback=self._update_progress_wrapper,
                 status_callback=update_status,
-                stop_event=self.stop_event,  # Передаем stop_event
+                stop_event=self.stop_event,
             )
             log_message(
-                "Этап 4/6: Группировка и поиск кандидатов на дубликаты завершены.",
+                f"Этап 4/{total_stages}: Группировка и поиск кандидатов на дубликаты завершены.",
                 level="info",
             )
-        except Exception as e:
-            log_message(
-                f"Ошибка на этапе 4 (Группировка и поиск дубликатов): {e}",
-                level="error",
-            )
-            update_status(f"Конвейер завершен с ошибками на этапе Группировки: {e}")
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
 
-        # --- Этап 5: Гибридная верификация дубликатов ---
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Верификация дубликатов")
-            update_status("Этап 5/6: Гибридная верификация дубликатов...")
-            log_message(
-                "Начало этапа 5/6: Гибридная верификация дубликатов...", level="info"
-            )
+        async def stage5_verify_duplicates():
             self.data = await verify_duplicates(
                 functions_df=self.data,
                 config=self.config,
                 progress_callback=self._update_progress_wrapper,
                 status_callback=update_status,
-                stop_event=self.stop_event,  # Передаем stop_event
+                stop_event=self.stop_event,
             )
             log_message(
-                "Этап 5/6: Гибридная верификация дубликатов завершена.", level="info"
+                f"Этап 5/{total_stages}: Гибридная верификация дубликатов завершена.",
+                level="info",
             )
-        except Exception as e:
-            log_message(
-                f"Ошибка на этапе 5 (Верификация дубликатов): {e}", level="error"
-            )
-            update_status(
-                f"Конвейер завершен с ошибками на этапе Верификации дубликатов: {e}"
-            )
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
 
-        # --- Этап 6: Генерация отчетов Markdown ---
-        try:
-            if self.stop_event.is_set():
-                return self._handle_stop("Генерация отчетов Markdown")
-            update_status("Этап 6/6: Генерация отчетов Markdown...")
-            log_message("Начало этапа 6/6: Генерация отчетов Markdown...", level="info")
-
+        async def stage6_generate_reports():
             markdown_output_dir = self.config.get(
                 "markdown_output_dir",
                 os.path.join(self.config["DEFAULT_OUTPUT_DIR"], "markdown_reports"),
@@ -321,20 +255,26 @@ class FullAnalysisPipeline:
                 config=self.config,
                 progress_callback=self._update_progress_wrapper,
                 status_callback=update_status,
-                stop_event=self.stop_event,  # Передаем stop_event
+                stop_event=self.stop_event,
             )
-            log_message("Этап 6/6: Генерация отчетов Markdown завершена.", level="info")
-        except Exception as e:
             log_message(
-                f"Ошибка на этапе 6 (Генерация отчетов Markdown): {e}", level="error"
+                f"Этап 6/{total_stages}: Генерация отчетов Markdown завершена.",
+                level="info",
             )
-            update_status(
-                f"Конвейер завершен с ошибками на этапе Генерации отчетов: {e}"
-            )
-            self.ui_queue.put(
-                {"type": "pipeline_finished", "success": False, "error": str(e)}
-            )
-            return False
+
+        # --- Выполнение конвейера ---
+        stages = [
+            (stage1_parsing, "Парсинг документов"),
+            (stage2_classify_types, "Классификация типов функций"),
+            (stage3_classify_spheres, "Классификация сфер функций"),
+            (stage4_grouping, "Группировка и поиск кандидатов на дубликаты"),
+            (stage5_verify_duplicates, "Гибридная верификация дубликатов"),
+            (stage6_generate_reports, "Генерация отчетов Markdown"),
+        ]
+
+        for i, (logic, name) in enumerate(stages, 1):
+            if not await self._run_stage(logic, name, i, total_stages):
+                return False  # Прерываем, если этап не удался
 
         update_status("Полный конвейер анализа завершен успешно!")
         log_message("Полный конвейер анализа завершен успешно!", level="info")

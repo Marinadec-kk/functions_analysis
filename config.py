@@ -80,6 +80,28 @@ AI_API_KEY = get_setting(
     default_value="your_ai_api_key_here",
 )
 
+AI_API_VERSION = get_setting(
+    env_var="AI_API_VERSION",
+    ini_section="API",
+    ini_key="AI_API_VERSION",
+    default_value="v1",
+)
+
+AI_CHAT_COMPLETION_ENDPOINT = get_setting(
+    env_var="AI_CHAT_COMPLETION_ENDPOINT",
+    ini_section="API",
+    ini_key="AI_CHAT_COMPLETION_ENDPOINT",
+    default_value="/chat/completions",
+)
+
+AI_EMBEDDING_ENDPOINT = get_setting(
+    env_var="AI_EMBEDDING_ENDPOINT",
+    ini_section="API",
+    ini_key="AI_EMBEDDING_ENDPOINT",
+    default_value="/embeddings",
+)
+
+
 # --- File Paths Configuration ---
 DEFAULT_INPUT_DOCS_DIR = os.path.join(
     BASE_DIR,
@@ -149,14 +171,21 @@ BACKOFF_FACTOR_API = get_setting(
 def get_full_config():
     """Gathers all configuration settings into a single dictionary."""
     return {
+        # API settings
         "ai_api_base_url": AI_API_BASE_URL,
         "ai_api_key": AI_API_KEY,
+        "ai_api_version": AI_API_VERSION,
+        "ai_chat_completion_endpoint": AI_CHAT_COMPLETION_ENDPOINT,
+        "ai_embedding_endpoint": AI_EMBEDDING_ENDPOINT,
+        # Path settings
         "default_input_docs_dir": DEFAULT_INPUT_DOCS_DIR,
         "default_output_dir": DEFAULT_OUTPUT_DIR,
+        "log_file_path": LOG_FILE_PATH,
+        # Model settings
         "classification_model_name": CLASSIFICATION_MODEL_NAME,
         "verification_model_name": VERIFICATION_MODEL_NAME,
         "embedding_model_name": EMBEDDING_MODEL_NAME,
-        "log_file_path": LOG_FILE_PATH,
+        # Application settings
         "max_retries_api": MAX_RETRIES_API,
         "backoff_factor_api": BACKOFF_FACTOR_API,
     }
