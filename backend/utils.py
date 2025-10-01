@@ -123,27 +123,6 @@ def update_progress(current: int, total: int, stage: str = ""):
 
 
 # --- API Utilities ---
-def prepare_api_base_url(base_url: str, api_version: str = "v1") -> str:
-    """
-    Prepares the full API base URL by appending the API version.
-
-    Args:
-        base_url (str): The base URL of the API.
-        api_version (str): The API version to append (e.g., "v1").
-
-    Returns:
-        str: The full API URL.
-
-    Raises:
-        ValueError: If the base_url is not provided.
-    """
-    if not base_url:
-        log_message("API base URL is not provided.", level="error")
-        raise ValueError("API base URL must be provided.")
-    # Ensure there's a single slash between base_url and api_version
-    return f"{base_url.rstrip('/')}/{api_version}"
-
-
 async def call_api_with_backoff(
     url: str,
     method: str = "POST",
@@ -232,42 +211,27 @@ async def call_llm_for_verdict(
     text1: str,
     text2: str,
     prompt_template: str,
-    llm_api_base_url: str = config.AI_API_BASE_URL,  # Use from config
-    llm_api_key: str = config.AI_API_KEY,  # Use from config
-    llm_model: str = config.VERIFICATION_MODEL_NAME,  # Use from config
+    llm_api_base_url: str = config.AI_API_BASE_URL,
+    llm_api_key: str = config.AI_API_KEY,
+    llm_model: str = config.VERIFICATION_MODEL_NAME,
+    api_version: str = config.AI_API_VERSION,
+    chat_endpoint: str = config.AI_CHAT_COMPLETION_ENDPOINT,
     max_tokens: int = 100,
     temperature: float = 0.7,
-    max_retries: int = config.MAX_RETRIES_API,  # Use from config
+    max_retries: int = config.MAX_RETRIES_API,
     timeout: int = 60,
 ) -> Dict[str, Any]:
     """
     Получает вердикт от LLM по двум текстам.
-
-    Args:
-        text1 (str): Первый текст для анализа.
-        text2 (str): Второй текст для анализа.
-        prompt_template (str): Шаблон промпта для LLM.
-        llm_api_base_url (str): Базовый URL для LLM API.
-        llm_api_key (str): API ключ для LLM.
-        llm_model (str): Название модели LLM для использования.
-        max_tokens (int): Максимальное количество токенов в ответе LLM.
-        temperature (float): Температура для генерации LLM.
-        max_retries (int): Максимальное количество попыток вызова API.
-        timeout (int): Таймаут для запроса к LLM API.
-
-    Returns:
-        Dict[str, Any]: Словарь с вердиктом или ошибкой.
     """
-    if (
-        not llm_api_key or llm_api_key == "your_ai_api_key_here"
-    ):  # Added check for default placeholder
-        log_message(
-            "API key for LLM is not provided or is a placeholder.", level="error"
-        )
+    if not llm_api_key or llm_api_key == "your_ai_api_key_here":
+        log_message("API key for LLM is not provided or is a placeholder.", level="error")
         return {"error": "API key not provided or invalid"}
 
-    full_prompt = prompt_template.format(text1=text1, text2=text2)
+    # Construct the full URL
+    full_url = f"{llm_api_base_url.rstrip('/')}/{api_version.strip('/')}{chat_endpoint.strip('/')}"
 
+    full_prompt = prompt_template.format(text1=text1, text2=text2)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {llm_api_key}",
@@ -281,7 +245,7 @@ async def call_llm_for_verdict(
 
     try:
         response_data = await call_api_with_backoff(
-            url=llm_api_base_url,
+            url=full_url,
             method="POST",
             headers=headers,
             json_data=payload,
@@ -315,33 +279,22 @@ async def async_get_embedding_batch(
     texts: List[str],
     api_key: str,
     model: str,
+    api_version: str = config.AI_API_VERSION,
+    embedding_endpoint: str = config.AI_EMBEDDING_ENDPOINT,
     max_retries: int = config.MAX_RETRIES_API,
     timeout: int = 120,
 ) -> List[List[float]]:
     """
     Асинхронно получает эмбеддинги для пакета текстов с использованием API.
-
-    Args:
-        api_base_url (str): Базовый URL API для получения эмбеддингов.
-        texts (List[str]): Список текстов для получения эмбеддингов.
-        api_key (str): API ключ для аутентификации.
-        model (str): Название модели для создания эмбеддингов.
-        max_retries (int): Максимальное количество попыток.
-        timeout (int): Таймаут для запроса.
-
-    Returns:
-        List[List[float]]: Список эмбеддингов, где каждый эмбеддинг - это список float.
-                           Возвращает пустые списки для текстов, где не удалось получить эмбеддинг.
     """
-    if not api_key or api_key == "your_embedding_api_key_here":
+    if not api_key or api_key == "your_ai_api_key_here":
         log_message(
             "API key for embeddings is not provided or is a placeholder.", level="error"
         )
-        # Return a list of empty lists, one for each text
         return [[] for _ in texts]
 
-    # Assuming the endpoint is at '/embeddings' relative to the base URL
-    embedding_url = f"{api_base_url.rstrip('/')}/embeddings"
+    # Construct the full URL for embeddings
+    embedding_url = f"{api_base_url.rstrip('/')}/{api_version.strip('/')}{embedding_endpoint.strip('/')}"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
