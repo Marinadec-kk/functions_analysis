@@ -347,10 +347,29 @@ class GUIApp:
         """Processes messages from the UI queue to update the UI."""
         while True:
             try:
-                # Get a message (callback function) from the queue without blocking
-                callback_func = self.ui_queue.get_nowait()
-                # Execute the callback in the main UI thread
-                callback_func()
+                message = self.ui_queue.get_nowait()
+                message_type = message.get("type")
+
+                if message_type == "log":
+                    self.log(
+                        message.get("message", ""), level=message.get("level", "info")
+                    )
+                elif message_type == "status":
+                    self.set_status(
+                        message.get("message", ""), level=message.get("level", "info")
+                    )
+                elif message_type == "progress":
+                    self.set_progress(
+                        message.get("current", 0),
+                        message.get("total", 0),
+                        message.get("stage", ""),
+                    )
+                else:
+                    self.log(
+                        f"Неизвестный тип сообщения из UI очереди: {message_type}",
+                        level="warning",
+                    )
+
             except queue.Empty:
                 break
             except Exception as e:

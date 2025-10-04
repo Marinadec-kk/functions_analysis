@@ -122,6 +122,14 @@ def update_progress(current: int, total: int, stage: str = ""):
         )
 
 
+def prepare_api_base_url(base_url: str, version: str) -> str:
+    """
+    Constructs a full API URL from a base URL and an API version/endpoint.
+    Ensures proper handling of trailing/leading slashes.
+    """
+    return f"{base_url.rstrip('/')}/{version.strip('/')}"
+
+
 # --- API Utilities ---
 async def call_api_with_backoff(
     url: str,

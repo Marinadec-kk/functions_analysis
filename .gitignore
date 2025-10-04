@@ -1,4 +1,6 @@
 ﻿# Default ignored files
+__pycache__/
+venv/
 /shelf/
 /workspace.xml
 # Rider ignored files
