@@ -1,9 +1,17 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 import queue
 import threading
-import os
-from typing import Dict, Any, Optional, Callable
+import tkinter as tk
+from tkinter import messagebox, ttk
+from typing import Any, Dict, Optional
+
+from frontend.tabs.ai_config_tab import create_ai_config_tab
+from frontend.tabs.dub_check_tab import create_dub_check_tab
+from frontend.tabs.group_dub_tab import create_group_dub_tab
+from frontend.tabs.hierarchy_tab import create_hierarchy_tab
+from frontend.tabs.md_sharding_tab import create_md_sharding_tab
+from frontend.tabs.parsing_tab import create_parsing_tab
+from frontend.tabs.spheres_tab import create_spheres_tab
+from frontend.tabs.types_tab import create_types_tab
 
 
 class GUIApp:
@@ -23,7 +31,6 @@ class GUIApp:
         self.worker_thread: Optional[threading.Thread] = None
 
         self._build_ui()
-        self._set_initial_ui_values()
         self._drain_ui_queue()  # Start polling the queue
 
     def _build_ui(self):
@@ -35,14 +42,30 @@ class GUIApp:
         self.tab_frames: Dict[str, ttk.Frame] = {}
         self.entry_widgets: Dict[str, tk.StringVar] = {}
 
-        self._create_parsing_tab()
-        self._create_types_tab()
-        self._create_spheres_tab()
-        self._create_group_dub_tab()
-        self._create_dub_check_tab()
-        self._create_hierarchy_tab()  # New tab added
-        self._create_md_sharding_tab()
-        self._create_ai_config_tab()
+        self.tab_frames["parsing"] = create_parsing_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["types"] = create_types_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["spheres"] = create_spheres_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["group_dub"] = create_group_dub_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["dub_check"] = create_dub_check_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["hierarchy_analysis"] = create_hierarchy_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["md_sharding"] = create_md_sharding_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
+        self.tab_frames["ai_config"] = create_ai_config_tab(
+            self.notebook, self.entry_widgets, self.current_config
+        )
 
         # Global controls and status
         control_frame = ttk.Frame(self.master)
@@ -94,247 +117,6 @@ class GUIApp:
         self.log_text.tag_config("error", foreground="red")
         self.log_text.tag_config("warning", foreground="orange")
         self.log_text.tag_config("info", foreground="black")
-
-    def _create_input_field(
-        self,
-        parent_frame: ttk.Frame,
-        label_text: str,
-        config_key: str,
-        is_folder: bool = False,
-        file_ext: str = "",
-        default_value: str = "",
-    ):
-        ttk.Label(parent_frame, text=label_text).pack(padx=5, pady=5, anchor="w")
-        entry_var = tk.StringVar(value=default_value)
-        entry = ttk.Entry(parent_frame, width=80, textvariable=entry_var)
-        entry.pack(padx=5, pady=2, fill="x")
-        self.entry_widgets[config_key] = entry_var
-
-        if is_folder:
-            button_command = lambda: self._choose_directory(entry_var)
-        else:
-            button_command = lambda: self._choose_file(entry_var, file_ext)
-
-        ttk.Button(parent_frame, text="Выбрать", command=button_command).pack(
-            padx=5, pady=2, anchor="w"
-        )
-
-    def _create_parsing_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="1. Парсинг")
-        self.tab_frames["parsing"] = frame
-
-        self._create_input_field(
-            frame,
-            "Входная папка с документами:",
-            "parsing_input_folder",
-            is_folder=True,
-            default_value=self.current_config.get("DEFAULT_INPUT_DOCS_DIR", ""),
-        )
-        # Note: parsing_output_file is now handled internally by backend.parsing_module.py
-        # if the module needs to save intermediate files. It's not directly exposed in UI config.
-
-    def _create_types_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="2. Классификация типов")
-        self.tab_frames["types"] = frame
-
-        # Input to this stage is output of parsing. Not explicit UI field.
-        # Output of this stage is input to next.
-        self._create_input_field(
-            frame,
-            "Выходной файл (после классификации типов):",
-            "types_output_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
-                "functions_with_types.xlsx",
-            ),
-        )
-
-    def _create_spheres_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="3. Классификация сфер")
-        self.tab_frames["spheres"] = frame
-
-        # Input to this stage is output of types. Not explicit UI field.
-        self._create_input_field(
-            frame,
-            "Файл с определениями сфер (Excel/CSV):",
-            "spheres_definitions_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_INPUT_DOCS_DIR", ""), "spheres.xlsx"
-            ),
-        )
-        self._create_input_field(
-            frame,
-            "Выходной файл (после классификации сфер):",
-            "spheres_output_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
-                "functions_with_spheres.xlsx",
-            ),
-        )
-
-    def _create_group_dub_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="4. Группировка и дубликаты")
-        self.tab_frames["group_dub"] = frame
-
-        # Input to this stage is output of spheres. Not explicit UI field.
-        self._create_input_field(
-            frame,
-            "Порог сходства для дубликатов (0.0-1.0):",
-            "similarity_threshold",
-            default_value=str(self.current_config.get("similarity_threshold", 0.8)),
-        )
-        self._create_input_field(
-            frame,
-            "Выходной файл (после группировки и кандидатов):",
-            "group_dub_output_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
-                "functions_with_candidates.xlsx",
-            ),
-        )
-
-    def _create_dub_check_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="5. Проверка дубликатов")
-        self.tab_frames["dub_check"] = frame
-
-        # Input to this stage is output of group_dub. Not explicit UI field.
-        self._create_input_field(
-            frame,
-            "Выходной файл (после проверки дубликатов):",
-            "duplicates_verified_output_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
-                "functions_verified_duplicates.xlsx",
-            ),
-        )
-
-    def _create_md_sharding_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="7. Шардирование MD")  # Updated stage number
-        self.tab_frames["md_sharding"] = frame
-
-        # Input to this stage is output of dub_check. Not explicit UI field.
-        self._create_input_field(
-            frame,
-            "Выходная папка для MD-отчетов:",
-            "markdown_output_dir",
-            is_folder=True,
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""), "markdown_reports"
-            ),
-        )
-
-    def _create_hierarchy_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="6. Иерархический анализ")
-        self.tab_frames["hierarchy_analysis"] = frame
-
-        # Input to this stage is output of dub_check. Not explicit UI field.
-        self._create_input_field(
-            frame,
-            "Выходной файл (после иерархического анализа):",
-            "hierarchy_output_file",
-            file_ext=".xlsx",
-            default_value=os.path.join(
-                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
-                "functions_hierarchical_analysis.xlsx",
-            ),
-        )
-
-    def _create_ai_config_tab(self):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="Настройки AI")
-        self.tab_frames["ai_config"] = frame
-
-        # AI API Base URL
-        self._create_input_field(
-            frame,
-            "Базовый URL AI API:",
-            "ai_api_base_url",
-            default_value=self.current_config.get("ai_api_base_url", ""),
-        )
-
-        # AI API Key (sensitive, handle carefully)
-        ttk.Label(frame, text="AI API Ключ:").pack(padx=5, pady=5, anchor="w")
-        entry_var_key = tk.StringVar(value=self.current_config.get("ai_api_key", ""))
-        entry_key = ttk.Entry(frame, width=80, textvariable=entry_var_key, show="*")
-        entry_key.pack(padx=5, pady=2, fill="x")
-        self.entry_widgets["ai_api_key"] = entry_var_key
-
-        # Other AI related settings (models, temperature, max_tokens, retries, etc.)
-        self._create_input_field(
-            frame,
-            "Модель для эмбеддингов:",
-            "embedding_model_name",
-            default_value=self.current_config.get(
-                "embedding_model_name", "text-embedding-ada-002"
-            ),
-        )
-        self._create_input_field(
-            frame,
-            "Модель для классификации типов:",
-            "classification_model_name",
-            default_value=self.current_config.get(
-                "classification_model_name", "gpt-3.5-turbo"
-            ),
-        )
-        self._create_input_field(
-            frame,
-            "Модель для LLM верификации дубликатов:",
-            "llm_duplicate_verification_model_name",
-            default_value=self.current_config.get(
-                "llm_duplicate_verification_model_name", "gpt-3.5-turbo"
-            ),
-        )
-        self._create_input_field(
-            frame,
-            "Количество повторных попыток API:",
-            "api_max_retries",
-            default_value=str(self.current_config.get("api_max_retries", 3)),
-        )
-        self._create_input_field(
-            frame,
-            "Таймаут API (секунды):",
-            "api_timeout",
-            default_value=str(self.current_config.get("api_timeout", 60)),
-        )
-
-    def _set_initial_ui_values(self):
-        # This function would populate default values from self.current_config
-        # It's partially covered by `default_value` in _create_input_field,
-        # but could be used for more complex initializations.
-        pass
-
-    def _choose_directory(self, entry_var: tk.StringVar):
-        folder_selected = filedialog.askdirectory()
-        if folder_selected:
-            entry_var.set(folder_selected)
-
-    def _choose_file(self, entry_var: tk.StringVar, file_ext: str):
-        file_types = []
-        if file_ext == ".xlsx":
-            file_types.append(("Excel files", "*.xlsx"))
-            file_types.append(
-                ("CSV files", "*.csv")
-            )  # Allow CSV as well for Excel fields
-        elif file_ext == ".json":
-            file_types.append(("JSON files", "*.json"))
-        else:
-            file_types.append(("All files", "*.*"))
-
-        file_selected = filedialog.askopenfilename(filetypes=file_types)
-        if file_selected:
-            entry_var.set(file_selected)
 
     def _on_start(self):
         if (
@@ -409,8 +191,8 @@ class GUIApp:
                     )
                     self.continue_button.config(state="normal")
                     self.start_button.config(
-                        state="disabled"
-                    )  # Ensure start button is disabled
+                        state="disabled"  # Ensure start button is disabled
+                    )
                 else:
                     self.log(
                         f"Неизвестный тип сообщения из UI очереди: {message_type}",
@@ -432,7 +214,7 @@ class GUIApp:
     def log(self, message: str, level: str = "info"):
         """Appends a message to the log text widget."""
         self.log_text.config(state="normal")
-        self.log_text.insert(tk.END, f"{message}\\n", level)
+        self.log_text.insert(tk.END, f"{message}\n", level)
         self.log_text.config(state="disabled")
         self.log_text.see(tk.END)  # Scroll to end
 
@@ -455,14 +237,16 @@ class GUIApp:
             self.progress_bar.config(value=0)
 
     def on_pipeline_finished(
-        self, success: Optional[bool], error: Optional[str] = None
+        self,
+        success: Optional[bool],
+        error: Optional[str] = None,
     ):
         """Callback from backend when pipeline finishes."""
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
         self.continue_button.config(
-            state="disabled"
-        )  # Disable continue button on finish
+            state="disabled"  # Disable continue button on finish
+        )
         self.progress_bar.config(value=100)  # Always set to 100 on finish
 
         if success is True:
@@ -472,7 +256,7 @@ class GUIApp:
         elif success is False:
             self.set_status(f"Конвейер завершен с ошибками: {error}", level="error")
             self.log(f"Конвейер завершен с ошибками: {error}", level="error")
-            messagebox.showerror("Ошибка", f"Конвейер завершен с ошибками:\\n{error}")
+            messagebox.showerror("Ошибка", f"Конвейер завершен с ошибками:\n{error}")
         else:  # success is None, means it was stopped
             self.set_status("Конвейер остановлен пользователем.", level="warning")
             self.log("Конвейер был остановлен пользователем.", level="warning")
