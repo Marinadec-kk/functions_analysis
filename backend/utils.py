@@ -18,6 +18,7 @@ import re  # Import for improved filename sanitization
 # Import configuration settings using relative import
 # Assuming 'backend' is a subpackage of the root package containing 'config.py'
 import config
+from datetime import datetime
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)
@@ -38,14 +39,17 @@ logger.addHandler(console_handler)
 
 # File Handler with rotation
 # Ensure the log directory exists before creating the file handler
-log_dir = os.path.dirname(config.LOG_FILE_PATH)
+log_dir = config.LOG_FOLDER_PATH  # Use a dedicated folder for logs
 if not os.path.exists(log_dir):
-    os.makedirs(
-        log_dir, exist_ok=True
-    )  # Use exist_ok=True to avoid error if dir already exists
+    os.makedirs(log_dir, exist_ok=True)
+
+# Generate a timestamped log file name
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+log_file_name = f"log_{timestamp}.log"
+log_file_path = os.path.join(log_dir, log_file_name)
 
 file_handler = RotatingFileHandler(
-    config.LOG_FILE_PATH,
+    log_file_path,
     maxBytes=10 * 1024 * 1024,  # 10 MB per file
     backupCount=5,  # Keep up to 5 backup log files
     encoding="utf-8",  # Specify encoding for robustness across different OS
@@ -66,16 +70,14 @@ def set_ui_queue_callback(callback: Callable[[Dict[str, Any]], None]):
     ui_queue_callback = callback
 
 
-def log_message(message: str, level: str = "info", to_ui: bool = True):
+def log_message(message: str, level: str = "info"):
     """
-    Logs a message to the console, file, and, if configured, to the UI queue.
+    Logs a message to the console and file.
 
     Args:
         message (str): The message to log.
         level (str): The logging level ('info', 'warning', 'error', 'debug').
-        to_ui (bool): If True, sends the log to the UI queue.
     """
-    full_message = f"[{level.upper()}] {message}"
     if level == "info":
         logger.info(message)
     elif level == "warning":
@@ -85,22 +87,14 @@ def log_message(message: str, level: str = "info", to_ui: bool = True):
     else:  # Default to debug for other levels
         logger.debug(message)
 
-    if to_ui and ui_queue_callback:
-        # Send a dictionary with type, level, and message to the UI queue
-        ui_queue_callback({"type": "log", "level": level, "message": full_message})
-
 
 def update_status(message: str):
     """
     Updates the status message on the UI, if configured.
-    Also logs the status message at debug level.
 
     Args:
         message (str): The status message to display.
     """
-    log_message(
-        f"Status: {message}", level="debug"
-    )  # Log status as debug to avoid excessive INFO logs
     if ui_queue_callback:
         ui_queue_callback({"type": "status", "message": message})
 
@@ -219,21 +213,26 @@ async def call_llm_for_verdict(
     text1: str,
     text2: str,
     prompt_template: str,
-    llm_api_base_url: str = config.AI_API_BASE_URL,
-    llm_api_key: str = config.AI_API_KEY,
-    llm_model: str = config.VERIFICATION_MODEL_NAME,
-    api_version: str = config.AI_API_VERSION,
-    chat_endpoint: str = config.AI_CHAT_COMPLETION_ENDPOINT,
+    config_dict: Dict[str, Any],  # New parameter to pass the config dictionary
     max_tokens: int = 100,
     temperature: float = 0.7,
-    max_retries: int = config.MAX_RETRIES_API,
     timeout: int = 60,
 ) -> Dict[str, Any]:
     """
     Получает вердикт от LLM по двум текстам.
     """
+    llm_api_base_url = config_dict.get("ai_api_base_url")
+    llm_api_key = config_dict.get("ai_api_key")
+    llm_model = config_dict.get("verification_model_name")
+    api_version = config_dict.get("ai_api_version")
+    chat_endpoint = config_dict.get("ai_chat_completion_endpoint")
+    max_retries = config_dict.get("max_retries_api")
+    backoff_factor = config_dict.get("backoff_factor_api")
+
     if not llm_api_key or llm_api_key == "your_ai_api_key_here":
-        log_message("API key for LLM is not provided or is a placeholder.", level="error")
+        log_message(
+            "API key for LLM is not provided or is a placeholder.", level="error"
+        )
         return {"error": "API key not provided or invalid"}
 
     # Construct the full URL
@@ -283,18 +282,20 @@ async def call_llm_for_verdict(
 
 
 async def async_get_embedding_batch(
-    api_base_url: str,
     texts: List[str],
-    api_key: str,
-    model: str,
-    api_version: str = config.AI_API_VERSION,
-    embedding_endpoint: str = config.AI_EMBEDDING_ENDPOINT,
-    max_retries: int = config.MAX_RETRIES_API,
-    timeout: int = 120,
+    config_dict: Dict[str, Any],  # New parameter to pass the config dictionary
 ) -> List[List[float]]:
     """
     Асинхронно получает эмбеддинги для пакета текстов с использованием API.
     """
+    api_base_url = config_dict.get("ai_api_base_url")
+    api_key = config_dict.get("ai_api_key")
+    model = config_dict.get("embedding_model_name")
+    api_version = config_dict.get("ai_api_version")
+    embedding_endpoint = config_dict.get("ai_embedding_endpoint")
+    max_retries = config_dict.get("max_retries_api")
+    timeout = config_dict.get("api_timeout")
+
     if not api_key or api_key == "your_ai_api_key_here":
         log_message(
             "API key for embeddings is not provided or is a placeholder.", level="error"

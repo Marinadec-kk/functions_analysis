@@ -54,14 +54,9 @@ async def _verification_worker(
                 text1=f"{pair.get('name_func1', '')} - {pair.get('desc_func1', '')}",
                 text2=f"{pair.get('name_func2', '')} - {pair.get('desc_func2', '')}",
                 prompt_template=llm_prompt_template,
-                llm_api_base_url=prepare_api_base_url(
-                    llm_api_base_url, config.get("ai_api_version", "v1")
-                ),
-                llm_api_key=llm_api_key,
-                llm_model=llm_model,
+                config_dict=config,  # Pass the entire config dictionary
                 max_tokens=llm_max_tokens,
                 temperature=llm_temperature,
-                max_retries=api_max_retries,
                 timeout=api_timeout,
             )
             pair["llm_verdict"] = verdict_data.get("verdict", "ERROR_LLM_RESPONSE")

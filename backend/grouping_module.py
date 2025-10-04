@@ -62,9 +62,7 @@ def cosine_similarity_matrix(
 
 async def _process_embedding_batch_and_store(
     texts_with_ids: List[Tuple[int, str]],
-    embedding_api_base_url: str,
-    api_key: str,
-    model: str,
+    config_dict: Dict[str, Any],
     results_dict: Dict[int, List[float]],
 ):
     """Worker to fetch embeddings for a batch of texts and store them in a shared dictionary."""
@@ -73,10 +71,8 @@ async def _process_embedding_batch_and_store(
 
     try:
         embeddings = await async_get_embedding_batch(
-            api_base_url=embedding_api_base_url,
             texts=texts,
-            api_key=api_key,
-            model=model,
+            config_dict=config_dict,
         )
         for i, emb in enumerate(embeddings):
             results_dict[indices[i]] = emb
@@ -90,9 +86,7 @@ async def calculate_embeddings_for_df(
     df: pd.DataFrame,
     id_column: str,
     text_column: str,
-    embedding_api_base_url: str,
-    api_key: str,
-    embedding_model: str,
+    config_dict: Dict[str, Any],  # New parameter
     batch_size: int = 16,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
@@ -118,9 +112,7 @@ async def calculate_embeddings_for_df(
         batch = all_texts_with_ids[i : i + batch_size]
         current_batch_num += 1
         tasks.append(
-            _process_embedding_batch_and_store(
-                batch, embedding_api_base_url, api_key, embedding_model, embeddings_map
-            )
+            _process_embedding_batch_and_store(batch, config_dict, embeddings_map)
         )
 
     # Run tasks with progress reporting
@@ -289,9 +281,7 @@ async def group_and_find_candidates(
         df=functions_df,
         id_column=id_column,
         text_column=text_column,
-        embedding_api_base_url=prepare_api_base_url(embedding_api_base_url),
-        api_key=embedding_api_key,
-        embedding_model=embedding_model,
+        config_dict=config,  # Pass the entire config dictionary
         progress_callback=progress_callback,
         status_callback=status_callback,
     )

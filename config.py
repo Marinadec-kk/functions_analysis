@@ -122,6 +122,16 @@ DEFAULT_OUTPUT_DIR = os.path.join(
     ),
 )
 
+LOG_FOLDER_PATH = os.path.join(
+    BASE_DIR,
+    get_setting(
+        env_var="LOG_FOLDER_PATH",
+        ini_section="Paths",
+        ini_key="LOG_FOLDER_PATH",
+        default_value="app_logs",
+    ),
+)
+
 # --- AI Model Parameters (example) ---
 CLASSIFICATION_MODEL_NAME = get_setting(
     env_var="CLASSIFICATION_MODEL_NAME",
@@ -143,15 +153,6 @@ EMBEDDING_MODEL_NAME = get_setting(
 )
 
 # --- Other Application Settings ---
-LOG_FILE_PATH = os.path.join(
-    BASE_DIR,
-    get_setting(
-        env_var="LOG_FILE_PATH",
-        ini_section="Paths",
-        ini_key="LOG_FILE_PATH",
-        default_value="app_logs.log",
-    ),
-)
 MAX_RETRIES_API = get_setting(
     env_var="MAX_RETRIES_API",
     ini_section="Application",  # Corrected section
@@ -180,7 +181,7 @@ def get_full_config():
         # Path settings
         "default_input_docs_dir": DEFAULT_INPUT_DOCS_DIR,
         "default_output_dir": DEFAULT_OUTPUT_DIR,
-        "log_file_path": LOG_FILE_PATH,
+        "log_folder_path": LOG_FOLDER_PATH,
         # Model settings
         "classification_model_name": CLASSIFICATION_MODEL_NAME,
         "verification_model_name": VERIFICATION_MODEL_NAME,

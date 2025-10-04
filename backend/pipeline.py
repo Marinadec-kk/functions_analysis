@@ -10,6 +10,7 @@ from backend.typology_module import classify_function_types
 from backend.spheres_module import classify_function_spheres
 from backend.grouping_module import group_and_find_candidates
 from backend.duplicates_module import verify_duplicates
+from backend.hierarchy_module import perform_hierarchical_analysis  # New import
 from backend.markdown_module import generate_markdown_reports
 from backend.utils import (
     log_message,
@@ -34,11 +35,22 @@ class FullAnalysisPipeline:
         self.data: pd.DataFrame = pd.DataFrame()
         self.stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
+        self.auto_advance_stages = config.get(
+            "auto_advance_stages", True
+        )  # New: Auto-advance setting
+        self.continue_event = asyncio.Event()  # New: Event for manual stage advancement
 
         # Устанавливаем callback для utils, чтобы логи отправлялись в UI
         set_ui_queue_callback(ui_queue.put)
         self.parsing_module = ParsingModule(ui_queue)  # Инициализируем ParsingModule
         log_message("FullAnalysisPipeline инициализирован.", level="info")
+
+    def continue_pipeline(self):
+        """
+        Signals the pipeline to continue to the next stage when in manual advance mode.
+        """
+        log_message("Получен сигнал на продолжение конвейера.", level="info")
+        self.continue_event.set()
 
     def start_analysis(self, ui_config: Dict[str, Any]):
         """
@@ -94,7 +106,12 @@ class FullAnalysisPipeline:
                 loop.close()
 
     async def _run_stage(
-        self, stage_logic: Callable, stage_name: str, stage_num: int, total_stages: int
+        self,
+        stage_logic: Callable,
+        stage_name: str,
+        stage_num: int,
+        total_stages: int,
+        required_columns: Optional[List[str]] = None,  # New parameter
     ) -> bool:
         """
         Выполняет один этап конвейера, инкапсулируя общую логику.
@@ -108,11 +125,46 @@ class FullAnalysisPipeline:
             f"Начало этапа {stage_num}/{total_stages}: {stage_name}...", level="info"
         )
 
+        # New: Validate required columns
+        if required_columns and not self.data.empty:
+            missing_columns = [
+                col for col in required_columns if col not in self.data.columns
+            ]
+            if missing_columns:
+                error_msg = f"Отсутствуют необходимые столбцы для этапа '{stage_name}': {', '.join(missing_columns)}. Пропуск этапа."
+                log_message(error_msg, level="error")
+                update_status(error_msg)
+                return False  # Skip this stage due to missing columns
+
         try:
             await stage_logic()
+
+            # New: Manual advance logic
+            if (
+                not self.auto_advance_stages and stage_num < total_stages
+            ):  # Don't pause after the last stage
+                update_status(
+                    f"Этап {stage_name} завершен. Ожидание ручного перехода..."
+                )
+                log_message(
+                    f"Этап {stage_name} завершен. Ожидание ручного перехода...",
+                    level="info",
+                )
+                self.ui_queue.put(
+                    {"type": "waiting_for_manual_advance", "stage_name": stage_name}
+                )
+                self.continue_event.clear()  # Clear the event for the next wait
+                await self.continue_event.wait()  # Wait for UI to signal continuation
+                log_message(
+                    f"Получен сигнал на продолжение после этапа {stage_name}.",
+                    level="info",
+                )
+
             return True  # Success
         except Exception as e:
-            log_message(f"Ошибка на этапе {stage_num} ({stage_name}): {e}", level="error")
+            log_message(
+                f"Ошибка на этапе {stage_num} ({stage_name}): {e}", level="error"
+            )
             update_status(f"Конвейер завершен с ошибками на этапе {stage_name}: {e}")
             self.ui_queue.put(
                 {"type": "pipeline_finished", "success": False, "error": str(e)}
@@ -152,7 +204,7 @@ class FullAnalysisPipeline:
             )
             return False
 
-        total_stages = 6
+        total_stages = 7  # Updated total stages
 
         # --- Определение логики для каждого этапа ---
         async def stage1_parsing():
@@ -170,7 +222,9 @@ class FullAnalysisPipeline:
             )
             if self.data.empty:
                 # Генерируем исключение, которое будет поймано в _run_stage
-                raise ValueError("Парсинг не дал результатов (Parsing yielded no results)")
+                raise ValueError(
+                    "Парсинг не дал результатов (Parsing yielded no results)"
+                )
             log_message(
                 f"Этап 1/{total_stages}: Парсинг завершен. Найдено {len(self.data)} функций.",
                 level="info",
@@ -243,7 +297,20 @@ class FullAnalysisPipeline:
                 level="info",
             )
 
-        async def stage6_generate_reports():
+        async def stage6_hierarchical_analysis():  # New stage
+            self.data = await perform_hierarchical_analysis(
+                functions_df=self.data,
+                config=self.config,
+                progress_callback=self._update_progress_wrapper,
+                status_callback=update_status,
+                stop_event=self.stop_event,
+            )
+            log_message(
+                f"Этап 6/{total_stages}: Иерархический анализ завершен.",
+                level="info",
+            )
+
+        async def stage7_generate_reports():  # Renamed stage
             markdown_output_dir = self.config.get(
                 "markdown_output_dir",
                 os.path.join(self.config["DEFAULT_OUTPUT_DIR"], "markdown_reports"),
@@ -258,22 +325,56 @@ class FullAnalysisPipeline:
                 stop_event=self.stop_event,
             )
             log_message(
-                f"Этап 6/{total_stages}: Генерация отчетов Markdown завершена.",
+                f"Этап 7/{total_stages}: Генерация отчетов Markdown завершена.",
                 level="info",
             )
 
         # --- Выполнение конвейера ---
         stages = [
-            (stage1_parsing, "Парсинг документов"),
-            (stage2_classify_types, "Классификация типов функций"),
-            (stage3_classify_spheres, "Классификация сфер функций"),
-            (stage4_grouping, "Группировка и поиск кандидатов на дубликаты"),
-            (stage5_verify_duplicates, "Гибридная верификация дубликатов"),
-            (stage6_generate_reports, "Генерация отчетов Markdown"),
+            (
+                stage1_parsing,
+                "Парсинг документов",
+                None,
+            ),  # No specific input columns, as it generates the initial DataFrame
+            (
+                stage2_classify_types,
+                "Классификация типов функций",
+                ["Полный текст функции"],
+            ),
+            (
+                stage3_classify_spheres,
+                "Классификация сфер функций",
+                ["Полный текст функции"],
+            ),
+            (
+                stage4_grouping,
+                "Группировка и поиск кандидатов на дубликаты",
+                ["Полный текст функции"],
+            ),
+            (
+                stage5_verify_duplicates,
+                "Гибридная верификация дубликатов",
+                ["Полный текст функции", "group_id", "candidate_duplicates"],
+            ),
+            (
+                stage6_hierarchical_analysis,
+                "Иерархический анализ",
+                [
+                    "ID функции",
+                    "Центральный ГО",
+                    "Подведомственный ГО",
+                    "Полный текст функции",
+                ],
+            ),
+            (
+                stage7_generate_reports,
+                "Генерация отчетов Markdown",
+                ["ID функции", "Полный текст функции", "type", "sphere", "group_id"],
+            ),  # Example columns, adjust as needed
         ]
 
-        for i, (logic, name) in enumerate(stages, 1):
-            if not await self._run_stage(logic, name, i, total_stages):
+        for i, (logic, name, required_cols) in enumerate(stages, 1):
+            if not await self._run_stage(logic, name, i, total_stages, required_cols):
                 return False  # Прерываем, если этап не удался
 
         update_status("Полный конвейер анализа завершен успешно!")

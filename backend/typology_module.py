@@ -11,64 +11,11 @@ from .utils import (
     log_message,
     update_status,
     update_progress,
+    async_get_embedding_batch,  # Import from utils
 )
-import config  # Импортируем наш файл конфигурации
+# import config  # No longer needed to import config directly here
 
 logger = logging.getLogger(__name__)
-
-
-async def async_get_embedding_batch(
-    texts: List[str],
-    llm_api_base_url: str = config.AI_API_BASE_URL,
-    llm_api_key: str = config.AI_API_KEY,
-    embedding_model: str = config.EMBEDDING_MODEL_NAME,
-    timeout: int = 60,
-    max_retries: int = config.MAX_RETRIES_API,
-) -> List[List[float]]:
-    """
-    Получает эмбеддинги для списка текстов от LLM API.
-    """
-    if not llm_api_key or llm_api_key == "your_ai_api_key_here":
-        log_message(
-            "API key for embedding is not provided or is a placeholder.", level="error"
-        )
-        return []
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {llm_api_key}",
-    }
-
-    # OpenAI-compatible embedding API payload
-    payload = {
-        "input": texts,
-        "model": embedding_model,
-    }
-
-    try:
-        response_data = await call_api_with_backoff(
-            url=prepare_api_base_url(
-                llm_api_base_url, api_version="v1/embeddings"
-            ),  # Assuming /v1/embeddings endpoint
-            method="POST",
-            headers=headers,
-            json_data=payload,
-            max_retries=max_retries,
-            timeout=timeout,
-        )
-
-        if response_data and "data" in response_data:
-            embeddings = [item["embedding"] for item in response_data["data"]]
-            return embeddings
-        else:
-            log_message(
-                f"Embedding API call failed or returned unexpected format: {response_data}",
-                level="warning",
-            )
-            return []
-    except Exception as e:
-        log_message(f"Error calling Embedding API: {e}", level="error")
-        return []
 
 
 class TypologyProcessor:
@@ -192,10 +139,8 @@ class TypologyProcessor:
         # 0. Получение эмбеддингов
         try:
             embeddings = await async_get_embedding_batch(
-                llm_api_base_url=self.embedding_endpoint,
                 texts=[function_description],
-                llm_api_key=self.ai_api_key,
-                embedding_model=self.embedding_model,
+                config_dict=self.config,  # Pass the entire config dictionary
             )
             function_data["embeddings"] = embeddings[0] if embeddings else []
         except Exception as e:

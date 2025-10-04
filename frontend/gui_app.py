@@ -40,6 +40,7 @@ class GUIApp:
         self._create_spheres_tab()
         self._create_group_dub_tab()
         self._create_dub_check_tab()
+        self._create_hierarchy_tab()  # New tab added
         self._create_md_sharding_tab()
         self._create_ai_config_tab()
 
@@ -56,6 +57,22 @@ class GUIApp:
             control_frame, text="Остановить", command=self._on_stop, state="disabled"
         )
         self.stop_button.pack(side="left", padx=5)
+
+        self.continue_button = ttk.Button(
+            control_frame,
+            text="Продолжить",
+            command=self._on_continue,
+            state="disabled",
+        )
+        self.continue_button.pack(side="left", padx=5)
+
+        self.auto_advance_var = tk.BooleanVar(value=True)  # Default to auto-advance
+        self.auto_advance_check = ttk.Checkbutton(
+            control_frame,
+            text="Автоматический переход к следующему этапу",
+            variable=self.auto_advance_var,
+        )
+        self.auto_advance_check.pack(side="left", padx=15)
 
         self.status_label = ttk.Label(control_frame, text="Статус: Готов")
         self.status_label.pack(side="right", padx=5)
@@ -203,7 +220,7 @@ class GUIApp:
 
     def _create_md_sharding_tab(self):
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="6. Шардирование MD")
+        self.notebook.add(frame, text="7. Шардирование MD")  # Updated stage number
         self.tab_frames["md_sharding"] = frame
 
         # Input to this stage is output of dub_check. Not explicit UI field.
@@ -214,6 +231,23 @@ class GUIApp:
             is_folder=True,
             default_value=os.path.join(
                 self.current_config.get("DEFAULT_OUTPUT_DIR", ""), "markdown_reports"
+            ),
+        )
+
+    def _create_hierarchy_tab(self):
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="6. Иерархический анализ")
+        self.tab_frames["hierarchy_analysis"] = frame
+
+        # Input to this stage is output of dub_check. Not explicit UI field.
+        self._create_input_field(
+            frame,
+            "Выходной файл (после иерархического анализа):",
+            "hierarchy_output_file",
+            file_ext=".xlsx",
+            default_value=os.path.join(
+                self.current_config.get("DEFAULT_OUTPUT_DIR", ""),
+                "functions_hierarchical_analysis.xlsx",
             ),
         )
 
@@ -331,6 +365,9 @@ class GUIApp:
             else:
                 ui_driven_config[key] = value
 
+        # Add the auto-advance setting
+        ui_driven_config["auto_advance_stages"] = self.auto_advance_var.get()
+
         # Merge with initial_config, UI values take precedence
         final_config_for_pipeline = self.current_config.copy()
         final_config_for_pipeline.update(ui_driven_config)
@@ -342,6 +379,12 @@ class GUIApp:
         self.log("Пользователь запросил остановку конвейера.")
         self.backend_pipeline.stop_analysis()
         self.stop_button.config(state="disabled")  # Disable immediately
+        self.continue_button.config(state="disabled")  # Disable continue button as well
+
+    def _on_continue(self):
+        self.log("Пользователь запросил продолжение конвейера.")
+        self.continue_button.config(state="disabled")
+        self.backend_pipeline.continue_pipeline()
 
     def _drain_ui_queue(self):
         """Processes messages from the UI queue to update the UI."""
@@ -350,11 +393,7 @@ class GUIApp:
                 message = self.ui_queue.get_nowait()
                 message_type = message.get("type")
 
-                if message_type == "log":
-                    self.log(
-                        message.get("message", ""), level=message.get("level", "info")
-                    )
-                elif message_type == "status":
+                if message_type == "status":
                     self.set_status(
                         message.get("message", ""), level=message.get("level", "info")
                     )
@@ -364,6 +403,14 @@ class GUIApp:
                         message.get("total", 0),
                         message.get("stage", ""),
                     )
+                elif message_type == "waiting_for_manual_advance":  # New message type
+                    self.set_status(
+                        f"Ожидание ручного перехода после этапа: {message.get('stage_name', 'Неизвестный этап')}"
+                    )
+                    self.continue_button.config(state="normal")
+                    self.start_button.config(
+                        state="disabled"
+                    )  # Ensure start button is disabled
                 else:
                     self.log(
                         f"Неизвестный тип сообщения из UI очереди: {message_type}",
@@ -413,6 +460,9 @@ class GUIApp:
         """Callback from backend when pipeline finishes."""
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
+        self.continue_button.config(
+            state="disabled"
+        )  # Disable continue button on finish
         self.progress_bar.config(value=100)  # Always set to 100 on finish
 
         if success is True:

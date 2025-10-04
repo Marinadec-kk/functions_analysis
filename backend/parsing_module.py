@@ -34,9 +34,7 @@ class ParsingModule:
     def __init__(self, ui_queue: queue.Queue = None):
         self.stop_event = threading.Event()
         self.ui_queue = ui_queue  # Для отправки логов/статусов в UI через utils
-        log_message(
-            "ParsingModule инициализирован.", to_ui=False
-        )  # Log to console only during init
+        log_message("ParsingModule инициализирован.")  # Log to console only during init
 
     def set_stop_event(self):
         """Sets the stop event to signal workers to terminate."""
@@ -261,7 +259,7 @@ class ParsingModule:
                 )
             return pd.DataFrame()
 
-        update_status(f"Начало парсинга {len(file_list)} файлов.", to_ui=True)
+        update_status(f"Начало парсинга {len(file_list)} файлов.")
 
         for i, file_path in enumerate(file_list):
             if self.stop_event.is_set():
@@ -301,7 +299,7 @@ class ParsingModule:
         else:
             log_message("Нет данных для сохранения после парсинга.", level="info")
 
-        update_status("Парсинг завершен.", to_ui=True)
+        update_status("Парсинг завершен.")
         if progress_callback:
             progress_callback(len(file_list), len(file_list))  # Ensure progress is 100%
         return final_df
