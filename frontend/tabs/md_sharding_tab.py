@@ -15,6 +15,18 @@ def create_md_sharding_tab(
 
     create_input_field(
         frame,
+        "Входной файл для шардинга:",
+        "md_sharding_input_file",
+        entry_widgets,
+        file_ext=".xlsx",
+        default_value=os.path.join(
+            current_config.get("DEFAULT_OUTPUT_DIR", ""),
+            "functions_hierarchical_analysis.xlsx",
+        ),
+    )
+
+    create_input_field(
+        frame,
         "Выходная папка для MD-отчетов:",
         "markdown_output_dir",
         entry_widgets,

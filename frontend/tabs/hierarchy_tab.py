@@ -15,6 +15,18 @@ def create_hierarchy_tab(
 
     create_input_field(
         frame,
+        "Входной файл для иерархического анализа:",
+        "hierarchy_input_file",
+        entry_widgets,
+        file_ext=".xlsx",
+        default_value=os.path.join(
+            current_config.get("DEFAULT_OUTPUT_DIR", ""),
+            "functions_verified_duplicates.xlsx",
+        ),
+    )
+
+    create_input_field(
+        frame,
         "Выходной файл (после иерархического анализа):",
         "hierarchy_output_file",
         entry_widgets,
