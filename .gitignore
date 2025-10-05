@@ -1,19 +1,12 @@
-# Default ignored files
+# Python
 __pycache__/
-venv/
-/shelf/
-/workspace.xml
-# Rider ignored files
-/modules.xml
-/.idea
-/.idea.functions_analysis.iml
-/contentModel.xml
-/projectSettingsUpdater.xml
-# Editor-based HTTP Client requests
-/httpRequests/
-# Datasource local storage ignored files
-/dataSources/
-/dataSources.local.xml
+*.pyc
+*.pyo
+*.pyd
 
-# Log files
-app_logs/
+# Virtual environment
+.venv/
+venv/
+
+# OS-specific
+.DS_Store
