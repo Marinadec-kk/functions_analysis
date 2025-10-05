@@ -52,7 +52,12 @@ class FullAnalysisPipeline:
         log_message("Получен сигнал на продолжение конвейера.", level="info")
         self.continue_event.set()
 
-    def start_analysis(self, ui_config: Dict[str, Any]):
+    def start_analysis(
+        self,
+        ui_config: Dict[str, Any],
+        input_file: Optional[str] = None,
+        start_stage: Optional[str] = None,
+    ):
         """
         Запускает конвейер анализа в отдельном потоке.
         Принимает конфигурацию, собранную из UI.
@@ -67,7 +72,10 @@ class FullAnalysisPipeline:
         # Передаем ui_config в основной config
         self.config.update(ui_config)
 
-        self.worker_thread = threading.Thread(target=self._worker_main_run_async)
+        self.worker_thread = threading.Thread(
+            target=self._worker_main_run_async,
+            args=(input_file, start_stage),
+        )
         self.worker_thread.daemon = (
             True  # Поток завершится при выходе основного приложения
         )
@@ -84,7 +92,9 @@ class FullAnalysisPipeline:
         else:
             log_message("Конвейер не запущен.", level="warning")
 
-    def _worker_main_run_async(self):
+    def _worker_main_run_async(
+        self, input_file: Optional[str], start_stage: Optional[str]
+    ):
         """
         Точка входа для рабочего потока, которая запускает асинхронный цикл.
         """
@@ -94,7 +104,7 @@ class FullAnalysisPipeline:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.run_full_pipeline())
+            loop.run_until_complete(self.run_full_pipeline(input_file, start_stage))
         except Exception as e:
             log_message(f"Критическая ошибка в рабочем потоке: {e}", level="error")
             self.ui_queue.put(
@@ -171,7 +181,9 @@ class FullAnalysisPipeline:
             )
             return False  # Failure
 
-    async def run_full_pipeline(self) -> bool:
+    async def run_full_pipeline(
+        self, input_file: Optional[str] = None, start_stage: Optional[str] = None
+    ) -> bool:
         """
         Основная асинхронная логика полного конвейера анализа.
         """
@@ -329,34 +341,39 @@ class FullAnalysisPipeline:
                 level="info",
             )
 
-        # --- Выполнение конвейера ---
         stages = [
             (
+                "parsing",
                 stage1_parsing,
                 "Парсинг документов",
                 None,
-            ),  # No specific input columns, as it generates the initial DataFrame
+            ),
             (
+                "classify_types",
                 stage2_classify_types,
                 "Классификация типов функций",
                 ["Полный текст функции"],
             ),
             (
+                "classify_spheres",
                 stage3_classify_spheres,
                 "Классификация сфер функций",
                 ["Полный текст функции"],
             ),
             (
+                "grouping",
                 stage4_grouping,
                 "Группировка и поиск кандидатов на дубликаты",
                 ["Полный текст функции"],
             ),
             (
+                "verify_duplicates",
                 stage5_verify_duplicates,
                 "Гибридная верификация дубликатов",
                 ["Полный текст функции", "group_id", "candidate_duplicates"],
             ),
             (
+                "hierarchical_analysis",
                 stage6_hierarchical_analysis,
                 "Иерархический анализ",
                 [
@@ -367,19 +384,104 @@ class FullAnalysisPipeline:
                 ],
             ),
             (
+                "generate_reports",
                 stage7_generate_reports,
                 "Генерация отчетов Markdown",
                 ["ID функции", "Полный текст функции", "type", "sphere", "group_id"],
-            ),  # Example columns, adjust as needed
+            ),
         ]
 
-        for i, (logic, name, required_cols) in enumerate(stages, 1):
+        start_index = 0
+        if input_file and start_stage:
+            if not await self._validate_and_load_input_file(
+                input_file, start_stage, stages
+            ):
+                return False  # Validation failed
+
+            # Find the index of the starting stage
+            stage_ids = [s[0] for s in stages]
+            try:
+                start_index = stage_ids.index(start_stage)
+            except ValueError:
+                log_message(
+                    f"Указанный начальный этап '{start_stage}' не найден. Запуск с начала.",
+                    level="warning",
+                )
+                # Optionally, you could fail here instead
+                # update_status(f"Ошибка: начальный этап '{start_stage}' не найден.")
+                # return False
+
+        # Execute stages from the determined start_index
+        for i, (stage_id, logic, name, required_cols) in enumerate(
+            stages[start_index:], start=start_index + 1
+        ):
+            # Skip parsing if we loaded a file
+            if stage_id == "parsing" and input_file:
+                log_message(
+                    "Пропускаем этап парсинга, так как был предоставлен входной файл.",
+                    level="info",
+                )
+                continue
+
             if not await self._run_stage(logic, name, i, total_stages, required_cols):
-                return False  # Прерываем, если этап не удался
+                return False  # Stop if a stage fails
 
         update_status("Полный конвейер анализа завершен успешно!")
         log_message("Полный конвейер анализа завершен успешно!", level="info")
         self.ui_queue.put({"type": "pipeline_finished", "success": True})
+        return True
+
+    async def _validate_and_load_input_file(
+        self, file_path: str, start_stage: str, stages: List[tuple]
+    ) -> bool:
+        """
+        Validates the provided Excel file and loads it into self.data.
+        """
+        update_status(f"Валидация входного файла: {os.path.basename(file_path)}...")
+        log_message(f"Начало валидации файла: {file_path}", level="info")
+
+        # 1. Check existence
+        if not os.path.exists(file_path):
+            log_message(f"Файл не найден: {file_path}", level="error")
+            update_status(f"Ошибка: Файл не найден: {os.path.basename(file_path)}")
+            return False
+
+        # 2. Check readability (is it a valid Excel file?)
+        try:
+            temp_df = pd.read_excel(file_path)
+        except Exception as e:
+            log_message(f"Не удалось прочитать Excel файл: {e}", level="error")
+            update_status(
+                f"Ошибка: Не удалось прочитать файл: {os.path.basename(file_path)}"
+            )
+            return False
+
+        # 3. Check for emptiness
+        if temp_df.empty:
+            log_message("Входной файл пуст.", level="error")
+            update_status("Ошибка: Входной файл не содержит данных.")
+            return False
+
+        # 4. Check for required columns based on the start_stage
+        required_columns = []
+        for stage_id, _, _, cols in stages:
+            if stage_id == start_stage and cols:
+                required_columns = cols
+                break
+
+        if required_columns:
+            missing_columns = [
+                col for col in required_columns if col not in temp_df.columns
+            ]
+            if missing_columns:
+                error_msg = f"Отсутствуют необходимые столбцы для этапа '{start_stage}': {', '.join(missing_columns)}"
+                log_message(error_msg, level="error")
+                update_status(f"Ошибка: {error_msg}")
+                return False
+
+        log_message("Валидация файла прошла успешно.", level="info")
+        self.data = temp_df  # Load data into the pipeline
+        update_status("Входной файл успешно загружен.")
         return True
 
     def _handle_stop(self, stage_name: str) -> bool:

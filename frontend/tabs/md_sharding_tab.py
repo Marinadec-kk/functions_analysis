@@ -1,7 +1,7 @@
 import os
 import tkinter as tk
 from tkinter import ttk
-from frontend.components.input_field import create_input_field
+from frontend.components.file_selector import create_file_selector
 
 
 def create_md_sharding_tab(
@@ -13,26 +13,13 @@ def create_md_sharding_tab(
     frame = ttk.Frame(notebook)
     notebook.add(frame, text="7. Шардирование MD")
 
-    create_input_field(
+    create_file_selector(
         frame,
-        "Входной файл для шардинга:",
-        "md_sharding_input_file",
+        "Выберите файл для анализа:",
+        "input_file",
         entry_widgets,
-        file_ext=".xlsx",
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""),
-            "functions_hierarchical_analysis.xlsx",
-        ),
+        directory=os.path.join(os.getcwd(), "files"),
+        file_extension=".xlsx",
     )
 
-    create_input_field(
-        frame,
-        "Выходная папка для MD-отчетов:",
-        "markdown_output_dir",
-        entry_widgets,
-        is_folder=True,
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""), "markdown_reports"
-        ),
-    )
     return frame

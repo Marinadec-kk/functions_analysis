@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 from typing import Any, Dict, Optional
 
 from frontend.tabs.ai_config_tab import create_ai_config_tab
-from frontend.tabs.dub_check_tab import create_dub_check_tab
+from frontend.tabs.verify_duplicates_tab import create_verify_duplicates_tab
 from frontend.tabs.group_dub_tab import create_group_dub_tab
 from frontend.tabs.hierarchy_tab import create_hierarchy_tab
 from frontend.tabs.md_sharding_tab import create_md_sharding_tab
@@ -54,7 +54,7 @@ class GUIApp:
         self.tab_frames["group_dub"] = create_group_dub_tab(
             self.notebook, self.entry_widgets, self.current_config
         )
-        self.tab_frames["dub_check"] = create_dub_check_tab(
+        self.tab_frames["verify_duplicates"] = create_verify_duplicates_tab(
             self.notebook, self.entry_widgets, self.current_config
         )
         self.tab_frames["hierarchy_analysis"] = create_hierarchy_tab(
@@ -154,8 +154,17 @@ class GUIApp:
         final_config_for_pipeline = self.current_config.copy()
         final_config_for_pipeline.update(ui_driven_config)
 
+        # Get the current tab to determine the start stage
+        current_tab_index = self.notebook.index(self.notebook.select())
+        start_stage_id = list(self.tab_frames.keys())[current_tab_index]
+
+        # Get the input file if it exists in the config
+        input_file = final_config_for_pipeline.get("input_file")
+
         # Call backend to start analysis. It will run in its own thread.
-        self.backend_pipeline.start_analysis(final_config_for_pipeline)
+        self.backend_pipeline.start_analysis(
+            final_config_for_pipeline, input_file, start_stage_id
+        )
 
     def _on_stop(self):
         self.log("Пользователь запросил остановку конвейера.")

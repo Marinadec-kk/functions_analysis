@@ -1,7 +1,7 @@
 import os
 import tkinter as tk
 from tkinter import ttk
-from frontend.components.input_field import create_input_field
+from frontend.components.file_selector import create_file_selector
 
 
 def create_hierarchy_tab(
@@ -13,27 +13,13 @@ def create_hierarchy_tab(
     frame = ttk.Frame(notebook)
     notebook.add(frame, text="6. Иерархический анализ")
 
-    create_input_field(
+    create_file_selector(
         frame,
-        "Входной файл для иерархического анализа:",
-        "hierarchy_input_file",
+        "Выберите файл для анализа:",
+        "input_file",
         entry_widgets,
-        file_ext=".xlsx",
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""),
-            "functions_verified_duplicates.xlsx",
-        ),
+        directory=os.path.join(os.getcwd(), "files"),
+        file_extension=".xlsx",
     )
 
-    create_input_field(
-        frame,
-        "Выходной файл (после иерархического анализа):",
-        "hierarchy_output_file",
-        entry_widgets,
-        file_ext=".xlsx",
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""),
-            "functions_hierarchical_analysis.xlsx",
-        ),
-    )
     return frame

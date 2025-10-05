@@ -6,4 +6,4 @@ scipy
 httpx
 tenacity
 python-dotenv
-httpx
+pywin32; sys_platform == 'win32'

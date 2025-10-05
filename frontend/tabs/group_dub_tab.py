@@ -2,6 +2,7 @@ import os
 import tkinter as tk
 from tkinter import ttk
 from frontend.components.input_field import create_input_field
+from frontend.components.file_selector import create_file_selector
 
 
 def create_group_dub_tab(
@@ -13,16 +14,13 @@ def create_group_dub_tab(
     frame = ttk.Frame(notebook)
     notebook.add(frame, text="4. Группировка и дубликаты")
 
-    create_input_field(
+    create_file_selector(
         frame,
-        "Входной файл для группировки:",
-        "group_dub_input_file",
+        "Выберите файл для анализа:",
+        "input_file",
         entry_widgets,
-        file_ext=".xlsx",
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""),
-            "functions_with_spheres.xlsx",
-        ),
+        directory=os.path.join(os.getcwd(), "files"),
+        file_extension=".xlsx",
     )
 
     ttk.Label(frame, text="Порог сходства для дубликатов (0.0-1.0):").pack(
@@ -35,17 +33,36 @@ def create_group_dub_tab(
     entry_sim.pack(padx=5, pady=2, fill="x")
     entry_widgets["similarity_threshold"] = entry_var_sim
 
-    create_input_field(
-        frame,
-        "Выходной файл (после группировки и кандидатов):",
-        "group_dub_output_file",
-        entry_widgets,
-        file_ext=".xlsx",
-        default_value=os.path.join(
-            current_config.get("DEFAULT_OUTPUT_DIR", ""),
-            "functions_with_candidates.xlsx",
-        ),
+    # --- Новые поля для группировки и универсальных функций ---
+    adv_frame = ttk.LabelFrame(frame, text="Расширенные настройки")
+    adv_frame.pack(fill=tk.X, padx=5, pady=10)
+
+    ttk.Label(adv_frame, text="Столбцы для группировки (через запятую):").pack(
+        padx=5, pady=5, anchor="w"
     )
+    entry_var_grouping = tk.StringVar(
+        value=str(current_config.get("grouping_cols", ""))
+    )
+    entry_grouping = ttk.Entry(adv_frame, width=80, textvariable=entry_var_grouping)
+    entry_grouping.pack(padx=5, pady=2, fill="x")
+    entry_widgets["grouping_cols"] = entry_var_grouping
+
+    create_input_field(
+        adv_frame,
+        "JSON универс. функций:",
+        "universal_json_file",
+        entry_widgets,
+        file_ext=".json",
+        default_value=str(current_config.get("universal_json_file", "")),
+    )
+
+    ttk.Label(adv_frame, text="Порог для универсальных (0.0-1.0):").pack(
+        padx=5, pady=5, anchor="w"
+    )
+    entry_var_univ = tk.StringVar(value=str(current_config.get("univ_threshold", 0.9)))
+    entry_univ = ttk.Entry(adv_frame, width=80, textvariable=entry_var_univ)
+    entry_univ.pack(padx=5, pady=2, fill="x")
+    entry_widgets["univ_threshold"] = entry_var_univ
 
     # Prompt Editor
     ttk.Label(frame, text="Промпт для AI-верификации дубликатов:").pack(

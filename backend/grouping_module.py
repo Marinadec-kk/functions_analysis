@@ -224,6 +224,10 @@ async def find_candidate_pairs(
     return candidates_df
 
 
+import os
+import json
+
+
 async def group_and_find_candidates(
     functions_df: pd.DataFrame,
     config: Dict[str, Any],
@@ -232,56 +236,52 @@ async def group_and_find_candidates(
 ) -> pd.DataFrame:
     """
     Основной публичный интерфейс для группировки и поиска кандидатов на дубликаты.
+    Поддерживает предварительную группировку и фильтрацию "универсальных" функций.
     """
     if status_callback:
         status_callback("Начало этапа группировки и поиска кандидатов на дубликаты...")
     log_message("Запуск модуля группировки и поиска дубликатов.", level="info")
 
     if functions_df.empty:
-        log_message(
-            "Входной DataFrame функций пуст. Пропускаем группировку.", level="warning"
-        )
+        log_message("Входной DataFrame пуст, пропускаем группировку.", level="warning")
         if status_callback:
             status_callback("Группировка: Нет данных для обработки.")
         return functions_df.copy()
 
-    # Получаем конфигурацию API из общего конфига
-    embedding_api_base_url = config.get("ai_api_base_url")
-    embedding_api_key = config.get("ai_api_key")
-    embedding_model = config.get("embedding_model_name", "text-embedding-ada-002")
-
-    llm_api_base_url = config.get(
-        "ai_api_base_url"
-    )  # LLM может использовать тот же базовый URL
-    llm_api_key = config.get("ai_api_key")
-    llm_model = config.get("llm_duplicate_verification_model_name", "gpt-3.5-turbo")
-    llm_prompt_template = config.get(
-        "llm_duplicate_verification_prompt",
-        "Are these two texts semantically similar enough to be considered duplicates? "
-        "Respond with 'YES_DUPLICATE' or 'NO_NOT_DUPLICATE'.\\nText 1: {text1}\\nText 2: {text2}",
-    )
-
+    # --- Извлечение конфигурации ---
     similarity_threshold = config.get("similarity_threshold", 0.8)
     id_column = config.get("function_id_column", "id")
-    text_column = config.get(
-        "function_description_column", "description"
-    )  # Колонка для сравнения
+    text_column = config.get("function_description_column", "description")
+    grouping_cols_str = config.get("grouping_cols", "")
+    grouping_cols = (
+        [col.strip() for col in grouping_cols_str.split(",") if col.strip()]
+        if grouping_cols_str
+        else []
+    )
+
+    universal_json_path = config.get("universal_json_file", "")
+    univ_threshold = config.get("univ_threshold", 0.9)
 
     if id_column not in functions_df.columns or text_column not in functions_df.columns:
         log_message(
-            f"Необходимые колонки '{id_column}' или '{text_column}' отсутствуют в DataFrame.",
+            f"Необходимые колонки '{id_column}' или '{text_column}' отсутствуют.",
             level="error",
         )
         if status_callback:
             status_callback("Ошибка: Отсутствуют необходимые колонки для группировки.")
         return functions_df.copy()
 
-    # 1. Вычисление эмбеддингов
+    # --- Инициализация колонок результатов ---
+    functions_df["is_universal"] = False
+    functions_df["is_duplicate_candidate"] = False
+    functions_df["collision_group_id"] = -1
+
+    # --- 1. Вычисление эмбеддингов для всех функций ---
     embedding_map = await calculate_embeddings_for_df(
         df=functions_df,
         id_column=id_column,
         text_column=text_column,
-        config_dict=config,  # Pass the entire config dictionary
+        config_dict=config,
         progress_callback=progress_callback,
         status_callback=status_callback,
     )
@@ -292,61 +292,174 @@ async def group_and_find_candidates(
         )
         if status_callback:
             status_callback("Группировка: Не удалось получить эмбеддинги.")
-        functions_df["is_duplicate_candidate"] = False
-        functions_df["collision_group_id"] = -1
         return functions_df.copy()
 
-    # 2. Поиск кандидатов на дубликаты
-    candidate_pairs_df = await find_candidate_pairs(
-        df=functions_df,
-        id_column=id_column,
-        text_column=text_column,
-        embeddings_map=embedding_map,
-        similarity_threshold=similarity_threshold,
-        progress_callback=progress_callback,
-        status_callback=status_callback,
+    # --- 2. Фильтрация "универсальных" функций ---
+    if universal_json_path and os.path.exists(universal_json_path):
+        if status_callback:
+            status_callback("Обнаружение универсальных функций...")
+        try:
+            with open(universal_json_path, "r", encoding="utf-8") as f:
+                universal_funcs_data = json.load(f)
+
+            universal_texts = [
+                item["text"] for item in universal_funcs_data if "text" in item
+            ]
+            if not universal_texts:
+                raise ValueError("JSON с универсальными функциями не содержит текстов.")
+
+            universal_embeddings = await async_get_embedding_batch(
+                universal_texts, config
+            )
+            universal_embeddings_np = np.array(universal_embeddings)
+
+            all_func_ids = list(embedding_map.keys())
+            all_func_embeddings_np = np.array(
+                [embedding_map[fid] for fid in all_func_ids]
+            )
+
+            similarity_matrix = cosine_similarity_matrix(
+                all_func_embeddings_np, universal_embeddings_np
+            )
+
+            max_sim_per_func = np.max(similarity_matrix, axis=1)
+            universal_count = 0
+            for i, func_id in enumerate(all_func_ids):
+                if max_sim_per_func[i] > univ_threshold:
+                    functions_df.loc[
+                        functions_df[id_column] == func_id, "is_universal"
+                    ] = True
+                    universal_count += 1
+            log_message(
+                f"Найдено и помечено {universal_count} универсальных функций.",
+                level="info",
+            )
+            if status_callback:
+                status_callback(f"Найдено {universal_count} универсальных функций.")
+
+        except Exception as e:
+            log_message(
+                f"Ошибка при обработке универсальных функций: {e}", level="error"
+            )
+            if status_callback:
+                status_callback(f"Ошибка обработки универсальных функций: {e}")
+
+    # --- 3. Поиск кандидатов на дубликаты ---
+    search_df = functions_df[~functions_df["is_universal"]].copy()
+    log_message(
+        f"Исключив универсальные, ищем дубликаты среди {len(search_df)} функций.",
+        level="info",
     )
 
-    # Инициализируем колонки для результатов
-    functions_df["is_duplicate_candidate"] = False
-    functions_df["collision_group_id"] = -1  # -1 для уникальных, или ID группы
+    all_candidate_pairs_df = []
 
-    # Создаем группы коллизий
-    collision_groups: Dict[Any, int] = {}  # {original_id: group_id}
+    if grouping_cols and all(col in search_df.columns for col in grouping_cols):
+        log_message(
+            f"Выполняется поиск дубликатов с группировкой по колонкам: {grouping_cols}",
+            level="info",
+        )
+        if status_callback:
+            status_callback(f"Группировка по {grouping_cols}...")
+
+        grouped = search_df.groupby(grouping_cols)
+        num_groups = len(grouped)
+        for i, (_, group_df) in enumerate(grouped):
+            if len(group_df) < 2:
+                continue
+
+            group_embedding_map = {
+                idx: embedding_map[idx]
+                for idx in group_df[id_column]
+                if idx in embedding_map
+            }
+
+            if status_callback:
+                status_callback(
+                    f"Анализ группы {i + 1}/{num_groups} (размер: {len(group_df)})..."
+                )
+
+            candidate_pairs_in_group = await find_candidate_pairs(
+                df=group_df,
+                id_column=id_column,
+                text_column=text_column,
+                embeddings_map=group_embedding_map,
+                similarity_threshold=similarity_threshold,
+                # progress_callback и status_callback можно передать, но это будет шумно
+            )
+            if not candidate_pairs_in_group.empty:
+                all_candidate_pairs_df.append(candidate_pairs_in_group)
+    else:
+        if grouping_cols:
+            log_message(
+                f"Колонки для группировки {grouping_cols} не найдены. Выполняется глобальный поиск.",
+                level="warning",
+            )
+            if status_callback:
+                status_callback(
+                    "Внимание: Колонки для группировки не найдены. Глобальный поиск."
+                )
+        else:
+            log_message("Выполняется глобальный поиск дубликатов.", level="info")
+
+        candidate_pairs = await find_candidate_pairs(
+            df=search_df,
+            id_column=id_column,
+            text_column=text_column,
+            embeddings_map={
+                k: v
+                for k, v in embedding_map.items()
+                if k in search_df[id_column].values
+            },
+            similarity_threshold=similarity_threshold,
+            progress_callback=progress_callback,
+            status_callback=status_callback,
+        )
+        if not candidate_pairs.empty:
+            all_candidate_pairs_df.append(candidate_pairs)
+
+    if not all_candidate_pairs_df:
+        log_message("Кандидаты на дубликаты не найдены.", level="info")
+        if status_callback:
+            status_callback("Кандидаты на дубликаты не найдены.")
+        return functions_df
+
+    final_candidate_pairs = pd.concat(all_candidate_pairs_df, ignore_index=True)
+    log_message(
+        f"Всего найдено {len(final_candidate_pairs)} пар-кандидатов.", level="info"
+    )
+
+    # --- 4. Создание групп коллизий ---
+    collision_groups: Dict[Any, int] = {}
     next_group_id = 0
 
-    if not candidate_pairs_df.empty:
-        # Для простоты, создаем группы на основе транзитивности.
-        # Более сложная логика могла бы использовать кластеризацию.
-        for _, row in candidate_pairs_df.iterrows():
-            id1, id2 = row["id1"], row["id2"]
-            group1 = collision_groups.get(id1)
-            group2 = collision_groups.get(id2)
+    for _, row in final_candidate_pairs.iterrows():
+        id1, id2 = row["id1"], row["id2"]
+        group1 = collision_groups.get(id1)
+        group2 = collision_groups.get(id2)
 
-            if group1 is None and group2 is None:
-                collision_groups[id1] = next_group_id
-                collision_groups[id2] = next_group_id
-                next_group_id += 1
-            elif group1 is None:
-                collision_groups[id1] = group2
-            elif group2 is None:
-                collision_groups[id2] = group1
-            elif group1 != group2:
-                # Объединяем группы
-                old_group_id = group2
-                new_group_id = group1
-                for key, val in collision_groups.items():
-                    if val == old_group_id:
-                        collision_groups[key] = new_group_id
+        if group1 is None and group2 is None:
+            collision_groups[id1] = next_group_id
+            collision_groups[id2] = next_group_id
+            next_group_id += 1
+        elif group1 is None:
+            collision_groups[id1] = group2
+        elif group2 is None:
+            collision_groups[id2] = group1
+        elif group1 != group2:
+            # Объединяем группы
+            old_group_id, new_group_id = (group2, group1)
+            for key, val in collision_groups.items():
+                if val == old_group_id:
+                    collision_groups[key] = new_group_id
 
-        # Обновляем DataFrame с группами
-        for original_id, group_id in collision_groups.items():
-            functions_df.loc[
-                functions_df[id_column] == original_id, "collision_group_id"
-            ] = group_id
-            functions_df.loc[
-                functions_df[id_column] == original_id, "is_duplicate_candidate"
-            ] = True
+    # Обновляем DataFrame с группами
+    for original_id, group_id in collision_groups.items():
+        functions_df.loc[
+            functions_df[id_column] == original_id, "collision_group_id"
+        ] = group_id
+        functions_df.loc[
+            functions_df[id_column] == original_id, "is_duplicate_candidate"
+        ] = True
 
     if status_callback:
         status_callback("Группировка и поиск кандидатов завершены.")
