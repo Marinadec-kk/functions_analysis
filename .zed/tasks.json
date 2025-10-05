@@ -1,0 +1,29 @@
+// Project tasks configuration. See https://zed.dev/docs/tasks for documentation.
+//
+// Example:
+[
+  {
+    "label": "Run parsing",
+    "command": "python scripts/1_parsing.py"
+  },
+  {
+    "label": "Run types classification",
+    "command": "python scripts/2_types.py"
+  },
+  {
+    "label": "Run spheres classification",
+    "command": "python scripts/3_spheres.py"
+  },
+  {
+    "label": "Run grouping and duplicates finder",
+    "command": "python scripts/4_group+dub.py"
+  },
+  {
+    "label": "Run duplicates checker",
+    "command": "python scripts/5_duplicates_check.py"
+  },
+  {
+    "label": "Run MD sharder",
+    "command": "python scripts/6_md_sharding.py"
+  }
+]
