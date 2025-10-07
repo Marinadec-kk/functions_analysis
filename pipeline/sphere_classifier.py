@@ -274,18 +274,18 @@ def parse_json_response(response_text: str) -> Dict:
 
 def create_ai_client(config: Dict) -> OpenAI:
     """Create AI client based on configuration."""
-    if config["ai_mode"] == "Онлайн":
+    if config["ai_mode"] == "online":
         return OpenAI(
             api_key=config["ai_api_key"],
             http_client=httpx.Client(timeout=60.0)
         )
-    elif config["ai_mode"] == "Локальный":
+    elif config["ai_mode"] == "local":
         return OpenAI(
             base_url=prepare_api_base_url(config["embedding_server"]),
             api_key="not-needed",
             http_client=httpx.Client(timeout=60.0)
         )
-    else:  # АП mode
+    else:  # alternative provider mode
         return OpenAI(
             base_url=prepare_api_base_url(config["embedding_server"]),
             api_key=config["ai_api_key"],

@@ -57,7 +57,7 @@ def run_document_parser(config: Dict) -> str:
     if not all_results:
         raise ValueError("No documents were successfully processed")
 
-    # Create Excel file
+    # Create Excel file (directory already created by validate_config)
     df = pd.DataFrame(all_results)
     output_path = config['output_excel']
     df.to_excel(output_path, index=False)
@@ -341,12 +341,12 @@ def sanitize_json_string(s: str) -> str:
 
 def create_ai_client(config: Dict) -> OpenAI:
     """Create AI client based on configuration."""
-    if config["ai_mode"] == "Онлайн":
+    if config["ai_mode"] == "online":
         return OpenAI(
             api_key=config["ai_api_key"],
             http_client=httpx.Client(timeout=60.0)
         )
-    elif config["ai_mode"] == "Локальный":
+    elif config["ai_mode"] == "local":
         return OpenAI(
             base_url=prepare_api_base_url(config["embedding_server"]),
             api_key="not-needed",
@@ -358,3 +358,5 @@ def create_ai_client(config: Dict) -> OpenAI:
             api_key=config["ai_api_key"],
             http_client=httpx.Client(timeout=60.0)
         )
+
+

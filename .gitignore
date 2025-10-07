@@ -220,3 +220,4 @@ input_documents
 data
 scripts
 md
+.env
