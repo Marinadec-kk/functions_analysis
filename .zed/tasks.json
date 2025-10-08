@@ -25,5 +25,9 @@
   {
     "label": "Run MD sharder",
     "command": "python scripts/6_md_sharding.py"
+  },
+  {
+    "label": "Run hierarchy",
+    "command": "python scripts/hierarchy/hierarchy_gui.py"
   }
 ]

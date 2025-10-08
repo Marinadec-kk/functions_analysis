@@ -7,3 +7,8 @@ httpx
 tenacity
 python-dotenv
 pywin32; sys_platform == 'win32'
+openai
+nltk
+pymorphy2
+openpyxl
+transformers
