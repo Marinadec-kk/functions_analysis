@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
 import torch
@@ -223,7 +224,7 @@ class HierarchyAnalyzer:
     def __init__(
         self,
         config: AnalysisConfig,
-        log_callback: Callable[[str], None],
+        log_callback: Callable[[Any], None],
         progress_callback: Callable[[int, int], None],
         stop_event: threading.Event,
     ) -> None:
@@ -238,7 +239,7 @@ class HierarchyAnalyzer:
         self.ai_verification_stats: Dict[str, Any] = {}
 
         if config.embed_mode == EMBED_MODE_REMOTE:
-            self.log_callback(
+            self._log(
                 f"{PERSONA_TITLE}: Использую внешний сервис эмбеддингов {config.remote_server_url}."
             )
             prepared_url = prepare_api_base_url(config.remote_server_url)
@@ -251,7 +252,7 @@ class HierarchyAnalyzer:
             )
             self.active_model_name = config.remote_model_name
         else:
-            self.log_callback(
+            self._log(
                 f"{PERSONA_TITLE}: Загружаю локальную модель эмбеддингов {config.local_model_name}."
             )
             self.embedder = RuBertEmbedder(model_name=config.local_model_name)
@@ -260,12 +261,23 @@ class HierarchyAnalyzer:
         self.embedding_validation_stats: Dict[str, Any] = {}
         self.duplicate_vector_indices: List[int] = []
 
+    def _log(self, message: str, level: str = "INFO") -> None:
+        payload = {
+            "level": level.upper(),
+            "message": message,
+            "time": time.strftime("%H:%M:%S"),
+        }
+        try:
+            self.log_callback(payload)
+        except Exception:
+            self.log_callback(message)  # type: ignore[arg-type]
+
     def _check_stop(self) -> None:
         if self.stop_event.is_set():
             raise RuntimeError("Процесс остановлен пользователем.")
 
     def _load_dataframe(self) -> pd.DataFrame:
-        self.log_callback(f"{PERSONA_TITLE}: Загружаю файл {self.config.input_path}.")
+        self._log(f"{PERSONA_TITLE}: Загружаю файл {self.config.input_path}.")
         df = pd.read_excel(self.config.input_path)
         missing = [
             column
@@ -298,7 +310,7 @@ class HierarchyAnalyzer:
         return df_sorted.reset_index(drop=True)
 
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Выполняю лемматизацию и удаление стоп-слов."
         )
         processed_texts = []
@@ -307,13 +319,13 @@ class HierarchyAnalyzer:
             normalized = self.normalizer.normalize(text)
             processed_texts.append(normalized)
             if (idx + 1) % 50 == 0:
-                self.log_callback(
+                self._log(
                     f"{PERSONA_TITLE}: Предобработка выполнена для {idx + 1} записей."
                 )
         return df.assign(_processed_text=processed_texts)
 
     def _embed(self, texts: List[str]) -> np.ndarray:
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Формирую эмбеддинги {self.active_model_name}."
         )
         if self.config.embed_mode == EMBED_MODE_REMOTE:
@@ -324,7 +336,7 @@ class HierarchyAnalyzer:
             embeddings = self.embedder.encode(
                 texts, batch_size=self.config.embed_batch_size
             )
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Получено {embeddings.shape[0]} векторных представлений."
         )
         return embeddings
@@ -404,8 +416,9 @@ class HierarchyAnalyzer:
         if not results:
             raise ValueError("Клиент эмбеддингов вернул пустой результат.")
         if errors:
-            self.log_callback(
-                f"{PERSONA_TITLE}: Предупреждение эмбеддингов — {'; '.join(errors[:3])}."
+            self._log(
+                f"{PERSONA_TITLE}: Предупреждение эмбеддингов — {'; '.join(errors[:3])}.",
+                level="WARNING",
             )
 
         vector_dim = len(next(iter(results.values())))
@@ -414,8 +427,9 @@ class HierarchyAnalyzer:
             embeddings[idx] = np.asarray(vector, dtype=np.float32)
         empty_indices = [idx for idx, text in enumerate(texts) if not text.strip()]
         if empty_indices:
-            self.log_callback(
-                f"{PERSONA_TITLE}: {len(empty_indices)} строк с пустым текстом получили нулевые векторы."
+            self._log(
+                f"{PERSONA_TITLE}: {len(empty_indices)} строк с пустым текстом получили нулевые векторы.",
+                level="WARNING",
             )
         return embeddings
 
@@ -437,7 +451,10 @@ class HierarchyAnalyzer:
             except Exception as error:
                 last_error = str(error)
                 time.sleep(1.0)
-        self.log_callback(f"{PERSONA_TITLE}: Ошибка запроса эмбеддингов — {last_error}")
+        self._log(
+            f"{PERSONA_TITLE}: Ошибка запроса эмбеддингов — {last_error}",
+            level="ERROR",
+        )
         return None
 
     @staticmethod
@@ -481,7 +498,7 @@ class HierarchyAnalyzer:
 
         total = len(candidates)
         if total == 0:
-            self.log_callback(
+            self._log(
                 f"{PERSONA_TITLE}: AI-верификация не требуется — нет кандидатов, превышающих порог."
             )
             self.ai_verification_stats = {
@@ -492,14 +509,15 @@ class HierarchyAnalyzer:
             }
             return
 
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Запускаю AI-верификацию {total} пар (порог {self.config.threshold:.2f})."
         )
         try:
             clients = self._build_ai_clients()
         except Exception as error:
-            self.log_callback(
-                f"{PERSONA_TITLE}: Не удалось инициализировать AI-клиентов: {error}. Пары будут считаться подтверждёнными."
+            self._log(
+                f"{PERSONA_TITLE}: Не удалось инициализировать AI-клиентов: {error}. Пары будут считаться подтверждёнными.",
+                level="ERROR",
             )
             self.ai_verification_stats = {
                 "checked": total,
@@ -510,8 +528,9 @@ class HierarchyAnalyzer:
             return
 
         if not clients:
-            self.log_callback(
-                f"{PERSONA_TITLE}: Нет доступных AI-клиентов. Пары считаются подтверждёнными."
+            self._log(
+                f"{PERSONA_TITLE}: Нет доступных AI-клиентов. Пары считаются подтверждёнными.",
+                level="WARNING",
             )
             self.ai_verification_stats = {
                 "checked": total,
@@ -633,7 +652,7 @@ class HierarchyAnalyzer:
             "rejected": rejected_count,
             "errors": error_count,
         }
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: AI-верификация завершена — подтверждено {assumed_confirmed} (LLM OK: {confirmed_count}), отклонено {rejected_count}, с ошибками {error_count}."
         )
 
@@ -723,7 +742,7 @@ class HierarchyAnalyzer:
             completed = progress_state["completed"]
             checkpoint = progress_state["next_checkpoint"]
             if completed >= checkpoint or completed >= total:
-                self.log_callback(
+                self._log(
                     f"{PERSONA_TITLE}: AI-верификация {completed}/{total}."
                 )
                 step = max(1, total // 5)
@@ -780,7 +799,9 @@ class HierarchyAnalyzer:
             parts.append(f"[sim {score:.3f}]")
         if message:
             parts.append(f"— {message}")
-        self.log_callback(" ".join(parts))
+        level_map = {"CORRECT": "SUCCESS", "NOT_CORRECT": "WARNING", "ERROR": "ERROR"}
+        level = level_map.get(verdict, "INFO")
+        self._log(" ".join(parts), level=level)
 
     def _get_llm_verdict(
         self,
@@ -898,15 +919,16 @@ class HierarchyAnalyzer:
         self.embedding_validation_stats = stats
         self.duplicate_vector_indices = duplicate_indices
 
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Валидация эмбеддингов — {stats['vector_count']} векторов, "
             f"размерность {stats['vector_dim']}, средняя норма {stats['avg_norm']:.4f}."
         )
         if zero_norm_indices:
             sample = [df.iloc[idx][self.config.col_id] for idx in zero_norm_indices[:5]]
-            self.log_callback(
+            self._log(
                 f"{PERSONA_TITLE}: Предупреждение — {len(zero_norm_indices)} функций с нулевой нормой вектора "
-                f"(например: {', '.join(map(str, sample))})."
+                f"(например: {', '.join(map(str, sample))}).",
+                level="WARNING",
             )
         if duplicate_pairs:
             examples = []
@@ -914,9 +936,10 @@ class HierarchyAnalyzer:
                 id_a = df.iloc[first][self.config.col_id]
                 id_b = df.iloc[second][self.config.col_id]
                 examples.append(f"{id_a}↔{id_b}")
-            self.log_callback(
+            self._log(
                 f"{PERSONA_TITLE}: Обнаружено {len(duplicate_pairs)} пар идентичных векторов "
-                f"(примеры: {', '.join(examples)})."
+                f"(примеры: {', '.join(examples)}).",
+                level="WARNING",
             )
         return stats
 
@@ -938,10 +961,10 @@ class HierarchyAnalyzer:
 
     def run(self) -> AnalysisResult:
         start_time = time.time()
-        self.log_callback(
+        self._log(
             f"{PERSONA_TITLE}: Старт анализа. Соблюдаю системный промпт методологии."
         )
-        self.log_callback(f"{PERSONA_TITLE}: {SYSTEM_PROMPT}")
+        self._log(f"{PERSONA_TITLE}: {SYSTEM_PROMPT}")
         self.zero_norm_indices = []
         self.embedding_validation_stats = {}
         self.duplicate_vector_indices = []
@@ -1184,15 +1207,25 @@ class HierarchyAnalyzer:
             else 0,
         }
 
-        self.log_callback(f"{PERSONA_TITLE}: Анализ завершен за {duration:.2f} секунд.")
+        self._log(
+            f"{PERSONA_TITLE}: Анализ завершен за {duration:.2f} секунд.",
+            level="SUCCESS",
+        )
         return AnalysisResult(report_df=report_df, log_df=log_df, metadata=metadata)
 
 
 class HierarchyAnalyzerApp:
+    SECTION_PAD = {"padx": 0, "pady": 16}
+    CONTROL_PAD = {"padx": 12, "pady": 8}
+    INLINE_PAD = {"padx": 8, "pady": 4}
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Иерархический анализ функций")
-        self.root.geometry("960x680")
+        self.root.geometry("960x720")
+        self.root.minsize(880, 640)
+
+        self._init_style()
 
         self.log_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
@@ -1207,17 +1240,263 @@ class HierarchyAnalyzerApp:
         self._load_profile(auto=True)
         self.root.after(100, self._poll_queue)
 
+    def _init_style(self) -> None:
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=11)
+        heading_font = tkfont.nametofont("TkHeadingFont")
+        heading_font.configure(size=12, weight="bold")
+        text_font = tkfont.nametofont("TkTextFont")
+        text_font.configure(size=11)
+
+        self.root.option_add("*Font", default_font.name)
+        self.root.option_add("*TCombobox*Listbox*Font", default_font.name)
+        self.root.option_add("*Text*Font", text_font.name)
+
+        style = ttk.Style(self.root)
+        self.style = style
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self._heading_font = heading_font
+        self._themable_text_widgets: List[tk.Text] = []
+
+        self.palettes = {
+            "dark": {
+                "accent": "#4F46E5",
+                "accent_hover": "#6366F1",
+                "accent_pressed": "#4338CA",
+                "on_accent": "#FFFFFF",
+                "background": "#0B1120",
+                "surface": "#111827",
+                "surface_active": "#1F2937",
+                "surface_pressed": "#0F172A",
+                "secondary_bg": "#1F2937",
+                "secondary_fg": "#CBD5F5",
+                "secondary_hover": "#2D3748",
+                "text": "#E2E8F0",
+                "text_muted": "#94A3B8",
+                "progress_trough": "#1F2937",
+                "entry_bg": "#0F172A",
+                "scroll_trough": "#111827",
+                "success": "#10B981",
+                "warning": "#FACC15",
+                "error": "#DC2626",
+            },
+            "light": {
+                "accent": "#2563EB",
+                "accent_hover": "#1D4ED8",
+                "accent_pressed": "#1E40AF",
+                "on_accent": "#FFFFFF",
+                "background": "#F8FAFC",
+                "surface": "#FFFFFF",
+                "surface_active": "#E2E8F0",
+                "surface_pressed": "#CBD5F5",
+                "secondary_bg": "#E2E8F0",
+                "secondary_fg": "#1F2937",
+                "secondary_hover": "#CBD5F5",
+                "text": "#1F2937",
+                "text_muted": "#64748B",
+                "progress_trough": "#E2E8F0",
+                "entry_bg": "#FFFFFF",
+                "scroll_trough": "#E5E7EB",
+                "success": "#047857",
+                "warning": "#CA8A04",
+                "error": "#DC2626",
+            },
+        }
+
+        self.theme_mode = "dark"
+        self.current_palette: Dict[str, str] = {}
+        self._apply_palette(self.theme_mode)
+
+    def _apply_palette(self, mode: str) -> None:
+        palette = self.palettes.get(mode, self.palettes["dark"])
+        self.theme_mode = mode
+        self.current_palette = palette
+
+        self.accent_color = palette["accent"]
+        self.accent_hover = palette["accent_hover"]
+        self.accent_pressed = palette["accent_pressed"]
+        self.surface_color = palette["surface"]
+        self.background_color = palette["background"]
+        self.success_color = palette["success"]
+        self.warning_color = palette["warning"]
+        self.error_color = palette["error"]
+
+        style = self.style
+        self.root.configure(bg=self.background_color)
+
+        style.configure("App.TFrame", background=self.background_color)
+        style.configure("Card.TFrame", background=self.surface_color, relief="flat")
+        style.configure(
+            "Card.TLabelframe",
+            background=self.surface_color,
+            borderwidth=0,
+            relief="flat",
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=self.surface_color,
+            foreground=palette["text"],
+            font=self._heading_font,
+        )
+        style.configure("TLabel", background=self.surface_color, foreground=palette["text"])
+        style.configure("App.TLabel", background=self.background_color, foreground=palette["text"])
+        style.configure("TNotebook", background=self.background_color, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(12, 8), foreground=palette["text_muted"])
+        style.map(
+            "TNotebook.Tab",
+            foreground=[("selected", palette["text"])],
+            background=[("selected", self.surface_color), ("!selected", self.background_color)],
+        )
+
+        style.configure(
+            "TButton",
+            padding=(10, 8),
+            background=self.surface_color,
+            foreground=palette["text"],
+            focusthickness=1,
+            focuscolor=self.accent_color,
+        )
+        style.map(
+            "TButton",
+            background=[("active", palette["surface_active"]), ("pressed", palette["surface_pressed"])],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=self.accent_color,
+            foreground=palette["on_accent"],
+            padding=(14, 10),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", self.accent_hover), ("pressed", self.accent_pressed)],
+            foreground=[("disabled", palette["text_muted"])],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background=palette["secondary_bg"],
+            foreground=palette["secondary_fg"],
+            padding=(12, 8),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", palette["secondary_hover"])],
+        )
+
+        style.configure(
+            "Accent.Horizontal.TProgressbar",
+            troughcolor=palette["progress_trough"],
+            bordercolor=palette["progress_trough"],
+            lightcolor=self.accent_color,
+            darkcolor=self.accent_color,
+            background=self.accent_color,
+        )
+
+        style.configure(
+            "Log.Treeview",
+            background=self.surface_color,
+            foreground=palette["text"],
+            fieldbackground=self.surface_color,
+            rowheight=28,
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            troughcolor=palette["scroll_trough"],
+            bordercolor=palette["scroll_trough"],
+            arrowsize=14,
+        )
+
+        entry_background = palette["entry_bg"]
+        style.configure(
+            "TEntry",
+            fieldbackground=entry_background,
+            foreground=palette["text"],
+            insertcolor=palette["text"],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=entry_background,
+            foreground=palette["text"],
+            arrowsize=14,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", entry_background)],
+            foreground=[("disabled", palette["text_muted"])],
+        )
+
+        self.root.option_add("*TEntry*FieldBackground", entry_background)
+        self.root.option_add("*TEntry*Foreground", palette["text"])
+        self.root.option_add("*Background", self.background_color)
+
+        self._refresh_text_widgets()
+        self._refresh_log_tags()
+
+        if hasattr(self, "theme_toggle"):
+            self.theme_toggle.config(text=self._theme_button_label())
+
+    def _refresh_log_tags(self) -> None:
+        if not hasattr(self, "log_tree"):
+            return
+        self.log_tree.tag_configure("INFO", foreground=self.current_palette.get("text", "#FFFFFF"))
+        self.log_tree.tag_configure("SUCCESS", foreground=self.success_color)
+        self.log_tree.tag_configure("WARNING", foreground=self.warning_color)
+        self.log_tree.tag_configure("ERROR", foreground=self.error_color)
+
+    def _refresh_text_widgets(self) -> None:
+        palette = getattr(self, "current_palette", None)
+        if not palette:
+            return
+        for widget in getattr(self, "_themable_text_widgets", []):
+            try:
+                widget.configure(
+                    bg=palette["surface"],
+                    fg=palette["text"],
+                    insertbackground=palette["text"],
+                )
+            except tk.TclError:
+                continue
+
+    def _register_themable_text(self, widget: tk.Text) -> None:
+        widget.configure(relief=tk.FLAT, highlightthickness=0, borderwidth=0)
+        self._themable_text_widgets.append(widget)
+        self._refresh_text_widgets()
+
+    def _theme_button_label(self) -> str:
+        return f"Тема: {'Тёмная' if self.theme_mode == 'dark' else 'Светлая'}"
+
+    def _toggle_theme(self) -> None:
+        new_mode = "light" if self.theme_mode == "dark" else "dark"
+        self._apply_palette(new_mode)
+
     def _build_ui(self) -> None:
-        main_frame = ttk.Frame(self.root, padding=16)
+        section_pad = self.SECTION_PAD
+        control_pad = self.CONTROL_PAD
+        inline_pad = self.INLINE_PAD
+
+        main_frame = ttk.Frame(self.root, padding=24, style="App.TFrame")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        toolbar = ttk.Frame(main_frame, style="App.TFrame")
+        toolbar.pack(fill=tk.X, pady=(0, 18))
+        self.theme_toggle = ttk.Button(
+            toolbar,
+            text=self._theme_button_label(),
+            command=self._toggle_theme,
+            style="Secondary.TButton",
+        )
+        self.theme_toggle.pack(side=tk.RIGHT)
 
-        data_tab = ttk.Frame(self.notebook)
-        embed_tab = ttk.Frame(self.notebook)
-        ai_tab = ttk.Frame(self.notebook)
-        log_tab = ttk.Frame(self.notebook)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 18))
+
+        data_tab = ttk.Frame(self.notebook, padding=16, style="App.TFrame")
+        embed_tab = ttk.Frame(self.notebook, padding=16, style="App.TFrame")
+        ai_tab = ttk.Frame(self.notebook, padding=16, style="App.TFrame")
+        log_tab = ttk.Frame(self.notebook, padding=16, style="App.TFrame")
 
         self.notebook.add(data_tab, text="Данные")
         self.notebook.add(embed_tab, text="Эмбеддинги")
@@ -1249,284 +1528,359 @@ class HierarchyAnalyzerApp:
         self.ai_json_mode_var = tk.BooleanVar(value=True)
         self.threshold_var = tk.StringVar(value=f"{DEFAULT_THRESHOLD:.2f}")
 
-        file_frame = ttk.LabelFrame(data_tab, text="Исходные данные")
-        file_frame.pack(fill=tk.X, pady=(0, 12))
+        file_frame = ttk.LabelFrame(
+            data_tab,
+            text="Исходные данные",
+            padding=16,
+            style="Card.TLabelframe",
+        )
+        file_frame.pack(fill=tk.X, **section_pad)
         ttk.Label(file_frame, text="Файл Excel:").grid(
-            row=0, column=0, sticky=tk.W, padx=4, pady=4
+            row=0, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(file_frame, textvariable=self.input_path_var, width=60).grid(
-            row=0, column=1, sticky=tk.W, pady=4
+            row=0, column=1, sticky=tk.W, **inline_pad
         )
         ttk.Button(file_frame, text="Обзор…", command=self._choose_input_file).grid(
-            row=0, column=2, padx=4, pady=4
+            row=0, column=2, **inline_pad
         )
         ttk.Label(file_frame, text="Каталог выгрузки:").grid(
-            row=1, column=0, sticky=tk.W, padx=4, pady=4
+            row=1, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(file_frame, textvariable=self.output_dir_var, width=60).grid(
-            row=1, column=1, sticky=tk.W, pady=4
+            row=1, column=1, sticky=tk.W, **inline_pad
         )
         ttk.Button(file_frame, text="Обзор…", command=self._choose_output_dir).grid(
-            row=1, column=2, padx=4, pady=4
+            row=1, column=2, **inline_pad
         )
         file_frame.grid_columnconfigure(1, weight=1)
 
-        profile_frame = ttk.Frame(data_tab)
-        profile_frame.pack(fill=tk.X, pady=(0, 12))
+        profile_frame = ttk.Frame(data_tab, style="App.TFrame")
+        profile_frame.pack(fill=tk.X, **section_pad)
         ttk.Button(
             profile_frame, text="Загрузить профиль…", command=self._load_profile_dialog
-        ).pack(side=tk.LEFT, padx=4)
+        ).pack(side=tk.LEFT, **inline_pad)
         ttk.Button(
             profile_frame, text="Сохранить профиль…", command=self._save_profile_dialog
-        ).pack(side=tk.LEFT, padx=4)
+        ).pack(side=tk.LEFT, **inline_pad)
 
-        columns_frame = ttk.LabelFrame(data_tab, text="Сопоставление столбцов")
-        columns_frame.pack(fill=tk.X, pady=(0, 12))
+        columns_frame = ttk.LabelFrame(
+            data_tab,
+            text="Сопоставление столбцов",
+            padding=16,
+            style="Card.TLabelframe",
+        )
+        columns_frame.pack(fill=tk.X, **section_pad)
         ttk.Label(columns_frame, text="ID:").grid(
-            row=0, column=0, sticky=tk.W, padx=4, pady=4
+            row=0, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(columns_frame, textvariable=self.col_id_var, width=25).grid(
-            row=0, column=1, padx=4, pady=4
+            row=0, column=1, **inline_pad
         )
         ttk.Label(columns_frame, text="Вышестоящий ГО:").grid(
-            row=0, column=2, sticky=tk.W, padx=4, pady=4
+            row=0, column=2, sticky=tk.W, **inline_pad
         )
         ttk.Entry(columns_frame, textvariable=self.col_superior_var, width=25).grid(
-            row=0, column=3, padx=4, pady=4
+            row=0, column=3, **inline_pad
         )
         ttk.Label(columns_frame, text="Исполняющий ГО:").grid(
-            row=1, column=0, sticky=tk.W, padx=4, pady=4
+            row=1, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(columns_frame, textvariable=self.col_executor_var, width=25).grid(
-            row=1, column=1, padx=4, pady=4
+            row=1, column=1, **inline_pad
         )
         ttk.Label(columns_frame, text="Уровень:").grid(
-            row=1, column=2, sticky=tk.W, padx=4, pady=4
+            row=1, column=2, sticky=tk.W, **inline_pad
         )
         ttk.Entry(columns_frame, textvariable=self.col_level_var, width=25).grid(
-            row=1, column=3, padx=4, pady=4
+            row=1, column=3, **inline_pad
         )
         ttk.Label(columns_frame, text="Текст функции:").grid(
-            row=2, column=0, sticky=tk.W, padx=4, pady=4
+            row=2, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(columns_frame, textvariable=self.col_text_var, width=58).grid(
-            row=2, column=1, columnspan=3, padx=4, pady=4
+            row=2, column=1, columnspan=3, **inline_pad
         )
         columns_frame.grid_columnconfigure(1, weight=1)
         columns_frame.grid_columnconfigure(3, weight=1)
 
-        threshold_frame = ttk.Frame(data_tab)
-        threshold_frame.pack(fill=tk.X, pady=(0, 12))
-        ttk.Label(threshold_frame, text="Порог косинусного сходства:").pack(
-            side=tk.LEFT
+        threshold_frame = ttk.Frame(data_tab, style="App.TFrame")
+        threshold_frame.pack(fill=tk.X, **section_pad)
+        ttk.Label(
+            threshold_frame,
+            text="Порог косинусного сходства:",
+            style="App.TLabel",
+        ).pack(
+            side=tk.LEFT, **inline_pad
         )
         ttk.Entry(threshold_frame, textvariable=self.threshold_var, width=8).pack(
-            side=tk.LEFT, padx=8
+            side=tk.LEFT, padx=12
         )
 
-        embed_frame = ttk.LabelFrame(embed_tab, text="Настройки эмбеддингов")
-        embed_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        embed_frame = ttk.LabelFrame(
+            embed_tab,
+            text="Настройки эмбеддингов",
+            padding=16,
+            style="Card.TLabelframe",
+        )
+        embed_frame.pack(fill=tk.BOTH, expand=True, **section_pad)
         ttk.Radiobutton(
             embed_frame,
             text="Локальная модель (RuBERT)",
             variable=self.embed_mode_var,
             value=EMBED_MODE_LOCAL,
             command=self._update_embed_controls,
-        ).grid(row=0, column=0, sticky=tk.W, padx=4, pady=4, columnspan=2)
+        ).grid(row=0, column=0, sticky=tk.W, columnspan=2, **inline_pad)
         ttk.Radiobutton(
             embed_frame,
             text="Внешний сервис (OpenAI-совместимый API)",
             variable=self.embed_mode_var,
             value=EMBED_MODE_REMOTE,
             command=self._update_embed_controls,
-        ).grid(row=0, column=2, sticky=tk.W, padx=4, pady=4, columnspan=2)
+        ).grid(row=0, column=2, sticky=tk.W, columnspan=2, **inline_pad)
         ttk.Label(embed_frame, text="Локальная модель:").grid(
-            row=1, column=0, sticky=tk.W, padx=4, pady=4
+            row=1, column=0, sticky=tk.W, **inline_pad
         )
         self.local_model_entry = ttk.Entry(
             embed_frame, textvariable=self.local_model_var, width=42
         )
-        self.local_model_entry.grid(row=1, column=1, sticky=tk.W, padx=4, pady=4)
+        self.local_model_entry.grid(row=1, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(embed_frame, text="Размер батча:").grid(
-            row=1, column=2, sticky=tk.W, padx=4, pady=4
+            row=1, column=2, sticky=tk.W, **inline_pad
         )
         ttk.Entry(embed_frame, textvariable=self.batch_size_var, width=8).grid(
-            row=1, column=3, sticky=tk.W, padx=4, pady=4
+            row=1, column=3, sticky=tk.W, **inline_pad
         )
         ttk.Label(embed_frame, text="URL сервера:").grid(
-            row=2, column=0, sticky=tk.W, padx=4, pady=4
+            row=2, column=0, sticky=tk.W, **inline_pad
         )
         self.remote_url_entry = ttk.Entry(
             embed_frame, textvariable=self.remote_url_var, width=42
         )
-        self.remote_url_entry.grid(row=2, column=1, sticky=tk.W, padx=4, pady=4)
+        self.remote_url_entry.grid(row=2, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(embed_frame, text="Модель сервера:").grid(
-            row=2, column=2, sticky=tk.W, padx=4, pady=4
+            row=2, column=2, sticky=tk.W, **inline_pad
         )
         self.remote_model_entry = ttk.Entry(
             embed_frame, textvariable=self.remote_model_var, width=20
         )
-        self.remote_model_entry.grid(row=2, column=3, sticky=tk.W, padx=4, pady=4)
+        self.remote_model_entry.grid(row=2, column=3, sticky=tk.W, **inline_pad)
         ttk.Label(embed_frame, text="API ключ:").grid(
-            row=3, column=0, sticky=tk.W, padx=4, pady=4
+            row=3, column=0, sticky=tk.W, **inline_pad
         )
         self.remote_api_key_entry = ttk.Entry(
             embed_frame, textvariable=self.remote_api_key_var, width=42, show="*"
         )
-        self.remote_api_key_entry.grid(row=3, column=1, sticky=tk.W, padx=4, pady=4)
+        self.remote_api_key_entry.grid(row=3, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(embed_frame, text="Воркеров:").grid(
-            row=3, column=2, sticky=tk.W, padx=4, pady=4
+            row=3, column=2, sticky=tk.W, **inline_pad
         )
         self.embed_workers_entry = ttk.Entry(
             embed_frame, textvariable=self.embed_workers_var, width=8
         )
-        self.embed_workers_entry.grid(row=3, column=3, sticky=tk.W, padx=4, pady=4)
+        self.embed_workers_entry.grid(row=3, column=3, sticky=tk.W, **inline_pad)
         for column in range(4):
             embed_frame.grid_columnconfigure(
                 column, weight=1 if column in (1, 3) else 0
             )
 
-        ai_frame = ttk.LabelFrame(ai_tab, text="AI-верификация")
-        ai_frame.pack(fill=tk.BOTH, expand=True)
+        ai_frame = ttk.LabelFrame(
+            ai_tab,
+            text="AI-верификация",
+            padding=16,
+            style="Card.TLabelframe",
+        )
+        ai_frame.pack(fill=tk.BOTH, expand=True, **section_pad)
         ttk.Checkbutton(
             ai_frame,
             text="Включить AI-верификацию",
             variable=self.ai_enabled_var,
             command=self._on_ai_enable_change,
-        ).pack(anchor=tk.W, padx=4, pady=4)
+        ).pack(anchor=tk.W, **inline_pad)
 
-        self.ai_mode_frame = ttk.Frame(ai_frame)
-        self.ai_mode_frame.pack(fill=tk.X, padx=4, pady=(0, 8))
+        self.ai_mode_frame = ttk.Frame(ai_frame, style="Card.TFrame")
+        self.ai_mode_frame.pack(fill=tk.X, **control_pad)
         ttk.Radiobutton(
             self.ai_mode_frame,
             text="Облачный сервис (OpenAI API)",
             variable=self.verification_mode_var,
             value="online",
             command=self._on_verification_mode_change,
-        ).pack(side=tk.LEFT, padx=4, pady=4)
+        ).pack(side=tk.LEFT, **inline_pad)
         ttk.Radiobutton(
             self.ai_mode_frame,
             text="Локальные серверы (LM Studio)",
             variable=self.verification_mode_var,
             value="local",
             command=self._on_verification_mode_change,
-        ).pack(side=tk.LEFT, padx=4, pady=4)
+        ).pack(side=tk.LEFT, **inline_pad)
 
-        self.online_frame = ttk.Frame(ai_frame)
+        self.online_frame = ttk.Frame(ai_frame, style="Card.TFrame")
         ttk.Label(self.online_frame, text="API ключ:").grid(
-            row=0, column=0, sticky=tk.W, padx=4, pady=4
+            row=0, column=0, sticky=tk.W, **inline_pad
         )
         self.ai_api_key_entry = ttk.Entry(
             self.online_frame, textvariable=self.ai_api_key_var, width=42, show="*"
         )
-        self.ai_api_key_entry.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        self.ai_api_key_entry.grid(row=0, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(self.online_frame, text="Модель:").grid(
-            row=1, column=0, sticky=tk.W, padx=4, pady=4
+            row=1, column=0, sticky=tk.W, **inline_pad
         )
         self.ai_model_entry = ttk.Entry(
             self.online_frame, textvariable=self.ai_model_var, width=42
         )
-        self.ai_model_entry.grid(row=1, column=1, sticky=tk.W, padx=4, pady=4)
+        self.ai_model_entry.grid(row=1, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(self.online_frame, text="Воркеров:").grid(
-            row=2, column=0, sticky=tk.W, padx=4, pady=4
+            row=2, column=0, sticky=tk.W, **inline_pad
         )
         self.ai_workers_entry = ttk.Entry(
             self.online_frame, textvariable=self.ai_workers_var, width=12
         )
-        self.ai_workers_entry.grid(row=2, column=1, sticky=tk.W, padx=4, pady=4)
+        self.ai_workers_entry.grid(row=2, column=1, sticky=tk.W, **inline_pad)
         self.online_frame.grid_columnconfigure(1, weight=1)
 
-        self.local_frame = ttk.Frame(ai_frame)
+        self.local_frame = ttk.Frame(ai_frame, style="Card.TFrame")
         ttk.Label(self.local_frame, text="Локальная модель:").grid(
-            row=0, column=0, sticky=tk.W, padx=4, pady=4
+            row=0, column=0, sticky=tk.W, **inline_pad
         )
         self.local_ai_model_entry = ttk.Entry(
             self.local_frame, textvariable=self.local_ai_model_var, width=42
         )
-        self.local_ai_model_entry.grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        self.local_ai_model_entry.grid(row=0, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(
             self.local_frame,
             text=f"По {WORKERS_PER_LOCAL_SERVER} потока(ов) на сервер.",
-        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=4, pady=(0, 4))
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=inline_pad["padx"], pady=(0, inline_pad["pady"]))
         ttk.Label(self.local_frame, text="Адреса серверов (по одному на строку):").grid(
-            row=2, column=0, columnspan=2, sticky=tk.W, padx=4, pady=(0, 4)
+            row=2, column=0, columnspan=2, sticky=tk.W, padx=inline_pad["padx"], pady=(0, inline_pad["pady"])
         )
         self.local_servers_text = tk.Text(self.local_frame, height=3, width=44)
         self.local_servers_text.grid(
-            row=3, column=0, columnspan=2, sticky=tk.W + tk.E, padx=4, pady=4
+            row=3, column=0, columnspan=2, sticky=tk.W + tk.E, **inline_pad
         )
         self.local_servers_text.insert(tk.END, "http://localhost:1234")
+        self._register_themable_text(self.local_servers_text)
         self.local_frame.grid_columnconfigure(0, weight=0)
         self.local_frame.grid_columnconfigure(1, weight=1)
 
-        self.common_ai_frame = ttk.Frame(ai_frame)
+        self.common_ai_frame = ttk.Frame(ai_frame, style="Card.TFrame")
         ttk.Label(self.common_ai_frame, text="Температура:").grid(
-            row=0, column=0, sticky=tk.W, padx=4, pady=4
+            row=0, column=0, sticky=tk.W, **inline_pad
         )
         ttk.Entry(
             self.common_ai_frame, textvariable=self.ai_temperature_var, width=10
-        ).grid(row=0, column=1, sticky=tk.W, padx=4, pady=4)
+        ).grid(row=0, column=1, sticky=tk.W, **inline_pad)
         ttk.Label(self.common_ai_frame, text="Макс. токенов:").grid(
-            row=0, column=2, sticky=tk.W, padx=4, pady=4
+            row=0, column=2, sticky=tk.W, **inline_pad
         )
         ttk.Entry(
             self.common_ai_frame, textvariable=self.ai_max_tokens_var, width=10
-        ).grid(row=0, column=3, sticky=tk.W, padx=4, pady=4)
+        ).grid(row=0, column=3, sticky=tk.W, **inline_pad)
         ttk.Checkbutton(
             self.common_ai_frame,
             text="JSON-ответ",
             variable=self.ai_json_mode_var,
-        ).grid(row=0, column=4, sticky=tk.W, padx=4, pady=4)
+        ).grid(row=0, column=4, sticky=tk.W, **inline_pad)
         for col in range(5):
             self.common_ai_frame.grid_columnconfigure(col, weight=1 if col == 1 else 0)
 
-        self.ai_prompt_frame = ttk.LabelFrame(ai_frame, text="Системный промпт LLM")
+        self.ai_prompt_frame = ttk.LabelFrame(
+            ai_frame,
+            text="Системный промпт LLM",
+            padding=12,
+            style="Card.TLabelframe",
+        )
         self.ai_prompt_text = tk.Text(self.ai_prompt_frame, height=6, wrap=tk.WORD)
-        self.ai_prompt_text.pack(fill=tk.X, expand=True, padx=4, pady=4)
+        self.ai_prompt_text.pack(fill=tk.X, expand=True, **inline_pad)
         self.ai_prompt_text.insert(tk.END, DEFAULT_AI_SYSTEM_PROMPT)
+        self._register_themable_text(self.ai_prompt_text)
 
         log_tab.rowconfigure(0, weight=1)
         log_tab.columnconfigure(0, weight=1)
-        self.log_text = tk.Text(log_tab, height=16, wrap=tk.WORD, state=tk.DISABLED)
-        self.log_text.grid(row=0, column=0, sticky=tk.NSEW, padx=4, pady=4)
+        log_container = ttk.Frame(log_tab, style="Card.TFrame", padding=16)
+        log_container.grid(row=0, column=0, sticky=tk.NSEW)
 
-        control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill=tk.X, pady=(0, 12))
-        self.start_button = ttk.Button(
-            control_frame, text="Старт анализа", command=self._start_analysis
+        columns = ("time", "level", "message")
+        self.log_tree = ttk.Treeview(
+            log_container,
+            columns=columns,
+            show="headings",
+            style="Log.Treeview",
+            selectmode="browse",
         )
-        self.start_button.pack(side=tk.LEFT, padx=4)
+        self.log_tree.heading("time", text="Время")
+        self.log_tree.heading("level", text="Статус")
+        self.log_tree.heading("message", text="Сообщение")
+        self.log_tree.column("time", width=90, anchor=tk.CENTER)
+        self.log_tree.column("level", width=140, anchor=tk.W)
+        self.log_tree.column("message", width=640, anchor=tk.W)
+
+        log_scroll = ttk.Scrollbar(
+            log_container, orient=tk.VERTICAL, command=self.log_tree.yview
+        )
+        self.log_tree.configure(yscrollcommand=log_scroll.set)
+        self.log_tree.grid(row=0, column=0, sticky=tk.NSEW)
+        log_scroll.grid(row=0, column=1, sticky=tk.NS, padx=(12, 0))
+        log_container.rowconfigure(0, weight=1)
+        log_container.columnconfigure(0, weight=1)
+
+        self._refresh_log_tags()
+
+        control_frame = ttk.Frame(main_frame, style="App.TFrame")
+        control_frame.pack(fill=tk.X, pady=(0, 18))
+        self.start_button = ttk.Button(
+            control_frame,
+            text="Старт анализа",
+            command=self._start_analysis,
+            style="Accent.TButton",
+        )
+        self.start_button.pack(side=tk.LEFT, padx=12)
         self.stop_button = ttk.Button(
             control_frame,
             text="Остановить",
             command=self._stop_analysis,
             state=tk.DISABLED,
+            style="Secondary.TButton",
         )
-        self.stop_button.pack(side=tk.LEFT, padx=4)
+        self.stop_button.pack(side=tk.LEFT, padx=12)
 
-        progress_frame = ttk.Frame(main_frame)
-        progress_frame.pack(fill=tk.X, pady=(0, 12))
+        progress_frame = ttk.Frame(main_frame, style="Card.TFrame", padding=16)
+        progress_frame.pack(fill=tk.X, pady=(0, 18))
         self.progress_var = tk.DoubleVar(value=0.0)
         self.progress_bar = ttk.Progressbar(
-            progress_frame, maximum=1.0, variable=self.progress_var, length=320
+            progress_frame,
+            maximum=1.0,
+            variable=self.progress_var,
+            length=320,
+            style="Accent.Horizontal.TProgressbar",
         )
-        self.progress_bar.pack(side=tk.LEFT, padx=4)
-        self.progress_label = ttk.Label(progress_frame, text="0 / 0")
-        self.progress_label.pack(side=tk.LEFT, padx=8)
+        self.progress_bar.pack(side=tk.LEFT, padx=12)
+        self.progress_label = ttk.Label(
+            progress_frame, text="0 / 0", style="App.TLabel"
+        )
+        self.progress_label.pack(side=tk.LEFT, padx=12)
         self.elapsed_var = tk.StringVar(value="0:00 / ETA —")
-        self.elapsed_label = ttk.Label(progress_frame, textvariable=self.elapsed_var)
-        self.elapsed_label.pack(side=tk.LEFT, padx=8)
+        self.elapsed_label = ttk.Label(
+            progress_frame, textvariable=self.elapsed_var, style="App.TLabel"
+        )
+        self.elapsed_label.pack(side=tk.LEFT, padx=12)
         self.open_output_button = ttk.Button(
             progress_frame,
             text="Открыть каталог",
             command=self._open_output_dir,
             state=tk.DISABLED,
+            style="Secondary.TButton",
         )
-        self.open_output_button.pack(side=tk.LEFT, padx=4)
+        self.open_output_button.pack(side=tk.LEFT, padx=12)
 
         self.status_var = tk.StringVar(value="Ожидание запуска.")
-        status_bar = ttk.Label(main_frame, textvariable=self.status_var, anchor=tk.W)
-        status_bar.pack(fill=tk.X, pady=(0, 0))
+        status_bar = ttk.Label(
+            main_frame,
+            textvariable=self.status_var,
+            anchor=tk.W,
+            style="App.TLabel",
+        )
+        status_bar.pack(fill=tk.X)
 
         self._update_embed_controls()
         self._on_ai_enable_change()
@@ -1546,11 +1900,71 @@ class HierarchyAnalyzerApp:
         if directory:
             self.output_dir_var.set(directory)
 
-    def _append_log(self, message: str) -> None:
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {message}\n")
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
+    def _push_log(self, message: str, level: str = "INFO") -> None:
+        self.log_queue.put(
+            (
+                "log",
+                {
+                    "level": level.upper(),
+                    "message": message,
+                    "time": time.strftime("%H:%M:%S"),
+                },
+            )
+        )
+
+    def _handle_analyzer_log(self, payload: Any) -> None:
+        if isinstance(payload, dict):
+            self.log_queue.put(("log", payload))
+        else:
+            self._push_log(str(payload))
+
+    def _append_log(self, message: Any) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        level = "INFO"
+        text = ""
+
+        if isinstance(message, dict):
+            text = str(message.get("message", ""))
+            level = str(message.get("level", "INFO")).upper()
+            timestamp = str(message.get("time", timestamp))
+        else:
+            text = str(message)
+            prefix_match = re.match(r"\[(info|success|warning|error)\]\s*(.*)", text, re.IGNORECASE)
+            if prefix_match:
+                level = prefix_match.group(1).upper()
+                text = prefix_match.group(2)
+            else:
+                level = self._detect_log_level(text)
+
+        tag = level if level in {"SUCCESS", "WARNING", "ERROR"} else "INFO"
+        item_id = self.log_tree.insert(
+            "",
+            "end",
+            values=(timestamp, level, text),
+            tags=(tag,),
+        )
+        self.log_tree.see(item_id)
+        max_items = 1000
+        children = self.log_tree.get_children()
+        if len(children) > max_items:
+            for obsolete_id in children[:-max_items]:
+                self.log_tree.delete(obsolete_id)
+
+    def _detect_log_level(self, message: str) -> str:
+        bracket_match = re.match(r"\[(info|success|warning|error)\]\s*", message, re.IGNORECASE)
+        if bracket_match:
+            return bracket_match.group(1).upper()
+        normalized = message.lower()
+        if any(keyword in normalized for keyword in ("ошибка", "error", "failed")):
+            return "ERROR"
+        if any(keyword in normalized for keyword in ("предупреждение", "warning")):
+            return "WARNING"
+        if any(
+            keyword in normalized
+            for keyword in ("готов", "успеш", "сохранен", "сохранён", "заверш")
+        ):
+            return "SUCCESS"
+        return "INFO"
 
     def _format_seconds(self, seconds: float) -> str:
         seconds = max(0, int(seconds))
@@ -1796,13 +2210,13 @@ class HierarchyAnalyzerApp:
         self.last_output_dir = None
         self.last_outputs = {}
         self.open_output_button.config(state=tk.DISABLED)
-        self.log_queue.put(("log", f"{PERSONA_TITLE}: Инициирую обработку."))
+        self._push_log(f"{PERSONA_TITLE}: Инициирую обработку.")
 
         def worker() -> None:
             try:
                 analyzer = HierarchyAnalyzer(
                     config=config,
-                    log_callback=lambda msg: self.log_queue.put(("log", msg)),
+                    log_callback=self._handle_analyzer_log,
                     progress_callback=lambda current, total: self.log_queue.put(
                         ("progress", (current, total))
                     ),
@@ -1829,7 +2243,7 @@ class HierarchyAnalyzerApp:
                     )
                 )
             except RuntimeError as interruption:
-                self.log_queue.put(("log", f"{PERSONA_TITLE}: {interruption}"))
+                self._push_log(f"{PERSONA_TITLE}: {interruption}", level="WARNING")
                 self.log_queue.put(
                     (
                         "finished",
@@ -1840,7 +2254,7 @@ class HierarchyAnalyzerApp:
                     )
                 )
             except Exception as error:
-                self.log_queue.put(("log", f"{PERSONA_TITLE}: Ошибка — {error}"))
+                self._push_log(f"{PERSONA_TITLE}: Ошибка — {error}", level="ERROR")
                 self.log_queue.put(
                     (
                         "finished",
@@ -1858,7 +2272,7 @@ class HierarchyAnalyzerApp:
         if not self.is_running:
             return
         self.stop_event.set()
-        self.log_queue.put(("log", f"{PERSONA_TITLE}: Получен сигнал на остановку."))
+        self._push_log(f"{PERSONA_TITLE}: Получен сигнал на остановку.", level="WARNING")
 
     def _open_output_dir(self) -> None:
         directory = self.last_output_dir or self.output_dir_var.get().strip()
@@ -2100,12 +2514,12 @@ class HierarchyAnalyzerApp:
     def _on_ai_enable_change(self) -> None:
         if self.ai_enabled_var.get():
             if not self.ai_mode_frame.winfo_ismapped():
-                self.ai_mode_frame.pack(fill=tk.X, padx=4, pady=(0, 8))
+                self.ai_mode_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
             self._on_verification_mode_change()
             if not self.common_ai_frame.winfo_ismapped():
-                self.common_ai_frame.pack(fill=tk.X, padx=4, pady=(0, 8))
+                self.common_ai_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
             if not self.ai_prompt_frame.winfo_ismapped():
-                self.ai_prompt_frame.pack(fill=tk.X, padx=4, pady=(0, 8))
+                self.ai_prompt_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
         else:
             for frame in (
                 self.ai_mode_frame,
@@ -2126,9 +2540,9 @@ class HierarchyAnalyzerApp:
         self.online_frame.pack_forget()
         self.local_frame.pack_forget()
         if mode == "online":
-            self.online_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+            self.online_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
         else:
-            self.local_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+            self.local_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
 
     def _save_outputs(self, result: AnalysisResult, config: AnalysisConfig) -> None:
         base_name = os.path.splitext(os.path.basename(config.input_path))[0]
@@ -2137,7 +2551,7 @@ class HierarchyAnalyzerApp:
         report_path = os.path.join(config.output_dir, report_filename)
         log_path = os.path.join(config.output_dir, log_filename)
 
-        self.log_queue.put(("log", f"{PERSONA_TITLE}: Сохраняю отчет {report_path}."))
+        self._push_log(f"{PERSONA_TITLE}: Сохраняю отчет {report_path}.")
         report_columns = list(result.report_df.columns)
         if "reason" in report_columns:
             report_columns.remove("reason")
@@ -2149,9 +2563,7 @@ class HierarchyAnalyzerApp:
             engine="openpyxl",
         )
 
-        self.log_queue.put(
-            ("log", f"{PERSONA_TITLE}: Формирую технический лог {log_path}.")
-        )
+        self._push_log(f"{PERSONA_TITLE}: Формирую технический лог {log_path}.")
         with pd.ExcelWriter(log_path, engine="openpyxl") as writer:
             result.log_df.to_excel(writer, index=False, sheet_name="log")
             meta_df = pd.DataFrame(
