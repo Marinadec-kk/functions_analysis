@@ -92,6 +92,8 @@ def run_function_classifier(config: Dict, excel_file: str) -> str:
         final_df = processed_df
 
     # Save updated Excel file
+    # Replace NaN values with empty strings to avoid JSON serialization errors
+    final_df = final_df.fillna("")
     final_df.to_excel(excel_file, index=False)
     logger.info(f"Updated Excel file with {len(processed_df)} classified functions: {excel_file}")
 
@@ -124,9 +126,27 @@ def get_similarity_suggestions(df_to_process: pd.DataFrame, config: Dict) -> Dic
                 http_client=httpx.Client(timeout=60.0)
             )
 
+        # Check if universal_df has required columns
+        if 'function' not in universal_df.columns:
+            logger.warning("Universal functions file missing 'function' column, skipping similarity suggestions")
+            return suggestions_map
+        
+        # Note: TrueType column is required for suggestions, but not in current universal_functions.json
+        # This feature is disabled until universal_functions.json is updated with TrueType labels
+        if 'TrueType' not in universal_df.columns:
+            logger.info("Universal functions file missing 'TrueType' column, similarity suggestions disabled")
+            return suggestions_map
+
         # Get embeddings for all texts
-        all_texts = list(df_to_process[COL_TEXT]) + list(universal_df['FunctionText'])
-        embeddings = get_embedding_from_server(embed_client, config['embedding_model'], all_texts)
+        all_texts = list(df_to_process[COL_TEXT]) + list(universal_df['function'])
+        
+        # Select appropriate embedding model based on AI mode
+        if config['ai_mode'] == 'online':
+            embedding_model = 'text-embedding-3-small'  # OpenAI's embedding model
+        else:
+            embedding_model = config['embedding_model']  # Local or alternative model
+        
+        embeddings = get_embedding_from_server(embed_client, embedding_model, all_texts)
 
         if embeddings is None or len(embeddings) != len(all_texts):
             logger.warning("Failed to get embeddings for similarity suggestions")

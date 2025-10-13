@@ -111,17 +111,23 @@ def process_document(doc_path: str, prompt: str, config: Dict) -> Optional[Dict]
         # Create abbreviation for ID
         go_abbrev = create_government_abbreviation(go_data['main_go'])
 
-        # Create result entries
+        # Create result entries (filter out empty function texts)
         results = []
-        for i, func_text in enumerate(functions, 1):
-            func_id = f"{go_abbrev}-{i}"
-
+        function_counter = 1
+        for func_text in functions:
+            # Skip empty or whitespace-only functions
+            if not func_text or not func_text.strip():
+                logger.warning(f"Skipping empty function text in {filename}")
+                continue
+                
+            func_id = f"{go_abbrev}-{function_counter}"
             results.append({
                 'ID': func_id,
-                'FunctionText': func_text,
+                'FunctionText': func_text.strip(),
                 'Госорган': go_data['main_go'],
                 'Вышестоящий': go_data.get('parent_go', ''),
             })
+            function_counter += 1
 
         logger.info(f"Extracted {len(results)} functions from {filename}")
         return results
@@ -136,10 +142,81 @@ def read_document_paragraphs(doc_path: str) -> List[str]:
     if doc_path.lower().endswith('.docx'):
         doc = Document(doc_path)
         return [p.text for p in doc.paragraphs]
+    elif doc_path.lower().endswith('.doc'):
+        # Convert .doc to .docx using LibreOffice, then read with python-docx
+        import tempfile
+        import subprocess
+        import shutil
+        
+        try:
+            # Create a temporary directory for conversion
+            temp_dir = tempfile.mkdtemp()
+            
+            # Copy the .doc file to temp directory (LibreOffice needs write access to the directory)
+            temp_doc = os.path.join(temp_dir, os.path.basename(doc_path))
+            shutil.copy2(doc_path, temp_doc)
+            
+            # Convert using LibreOffice headless mode
+            logger.info(f"Converting {os.path.basename(doc_path)} to .docx using LibreOffice...")
+            
+            # Try multiple possible LibreOffice commands
+            libreoffice_commands = [
+                'libreoffice',
+                'soffice',
+                '/usr/bin/libreoffice',
+                '/usr/bin/soffice'
+            ]
+            
+            conversion_successful = False
+            for cmd in libreoffice_commands:
+                try:
+                    result = subprocess.run(
+                        [cmd, '--headless', '--convert-to', 'docx', '--outdir', temp_dir, temp_doc],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    
+                    if result.returncode == 0:
+                        conversion_successful = True
+                        logger.debug(f"Conversion successful using {cmd}")
+                        break
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    continue
+            
+            if not conversion_successful:
+                raise RuntimeError("LibreOffice not found or conversion failed. Install LibreOffice: sudo apt-get install libreoffice")
+            
+            # Find the converted .docx file
+            base_name = os.path.splitext(os.path.basename(doc_path))[0]
+            converted_docx = os.path.join(temp_dir, base_name + '.docx')
+            
+            if not os.path.exists(converted_docx):
+                raise FileNotFoundError(f"Converted file not found: {converted_docx}")
+            
+            # Read the converted .docx file
+            doc = Document(converted_docx)
+            paragraphs = [p.text for p in doc.paragraphs]
+            
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            
+            logger.info(f"Successfully converted and read {len(paragraphs)} paragraphs from .doc file: {os.path.basename(doc_path)}")
+            return paragraphs
+            
+        except Exception as e:
+            # Clean up on error
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            logger.error(f"Failed to convert/read .doc file {doc_path}: {e}")
+            raise ValueError(f"Failed to read .doc file: {doc_path}. Error: {e}")
     else:
-        # For .doc files, we would need win32com, but since we're removing pywin32,
-        # we'll skip .doc support for now or raise an appropriate error
-        raise ValueError(f"Unsupported document format: {doc_path}. Only .docx files are supported.")
+        raise ValueError(f"Unsupported document format: {doc_path}. Only .docx and .doc files are supported.")
 
 
 def extract_government_body_name(paragraphs: List[str], filename: str, prompt: str, config: Dict) -> Optional[str]:
@@ -256,8 +333,14 @@ def extract_functions(paragraphs: List[str]) -> Tuple[List[str], str]:
         low = text.lower()
 
         if not in_section:
-            if re.match(r"^\s*(?:\d+\.?\s*)?функции:?\s*$", low):
-                in_section = True
+            # More flexible header detection - matches various formats:
+            # "функции", "3. функции:", "функции центрального государственного органа", etc.
+            if re.search(r"\bфункци[ияй]\b", low):
+                # Check it's likely a section header (short or at start of line)
+                if len(text.split()) <= 10 or re.match(r"^\s*\d+", text):
+                    in_section = True
+                    logger.debug(f"Found functions section header: {text[:100]}")
+                    continue
             continue
 
         # Stop at section headers
@@ -267,7 +350,14 @@ def extract_functions(paragraphs: List[str]) -> Tuple[List[str], str]:
         if text.strip():
             functions.append(text.strip())
 
-    cleaned_functions = [clean_function_text(f) for f in functions if f]
+    # Clean and filter out empty functions
+    cleaned_functions = []
+    for f in functions:
+        if f:
+            cleaned = clean_function_text(f)
+            if cleaned and cleaned.strip():  # Only include non-empty after cleaning
+                cleaned_functions.append(cleaned)
+    
     if not in_section:
         return [], "HEADER_NOT_FOUND"
     if in_section and not cleaned_functions:

@@ -158,6 +158,8 @@ def run_sphere_classifier(config: Dict, excel_file: str) -> str:
         final_df = processed_df
 
     # Save updated Excel file
+    # Replace NaN values with empty strings to avoid JSON serialization errors
+    final_df = final_df.fillna("")
     final_df.to_excel(excel_file, index=False)
     logger.info(f"Updated Excel file with {len(processed_df)} sphere-classified functions: {excel_file}")
 
@@ -227,7 +229,43 @@ def process_single_function_for_sphere(client: OpenAI, row: pd.Series, config: D
             parsed = parse_json_response(content)
 
             sphere_name = parsed.get("name", "").strip()
+            
+            # Helper function to normalize sphere codes (add leading zero if needed)
+            def normalize_code(code: str) -> str:
+                """Normalize sphere code: '1.1' -> '01.1', '1' -> '01'"""
+                if '.' in code:
+                    # Handle hierarchical codes like "1.1" or "01.1"
+                    # Only normalize the first part (main category)
+                    parts = code.split('.')
+                    parts[0] = parts[0].zfill(2)  # Only pad first part
+                    return '.'.join(parts)
+                else:
+                    # Handle single-level codes like "1" or "01"
+                    return code.zfill(2)
+            
+            # Extract code if response is in "code: name" or "code name" format
+            # First, try splitting by colon
+            if ":" in sphere_name:
+                potential_code = sphere_name.split(":")[0].strip()
+                normalized_code = normalize_code(potential_code)
+                if normalized_code in SPHERES_MAP:
+                    row[COL_SPHERE] = normalized_code
+                    return row
+            
+            # Try splitting by space and checking first token
+            if " " in sphere_name:
+                potential_code = sphere_name.split()[0].strip()
+                normalized_code = normalize_code(potential_code)
+                if normalized_code in SPHERES_MAP:
+                    row[COL_SPHERE] = normalized_code
+                    return row
 
+            # Try normalizing the sphere_name itself (might be just a code)
+            normalized_sphere = normalize_code(sphere_name)
+            if normalized_sphere in SPHERES_MAP:
+                row[COL_SPHERE] = normalized_sphere
+                return row
+            
             # Validate sphere code or name exists in our mapping
             if sphere_name and sphere_name in SPHERES_MAP:
                 # It's a valid code

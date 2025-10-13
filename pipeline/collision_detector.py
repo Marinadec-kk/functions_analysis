@@ -78,6 +78,7 @@ def run_collision_detector(config: Dict, excel_file: str) -> str:
             df_to_process.at[idx, COL_COLLISION_GROUP] = "NO_COLLISION"
             df_to_process.at[idx, COL_COLLISION_VERDICT] = "FALSE"
         final_df = pd.concat([df_already_processed, df_to_process], ignore_index=True) if not df_already_processed.empty else df_to_process
+        final_df = final_df.fillna("")
         final_df.to_excel(excel_file, index=False)
         return excel_file
 
@@ -97,6 +98,8 @@ def run_collision_detector(config: Dict, excel_file: str) -> str:
         final_df = df_to_process
 
     # Save updated Excel file
+    # Replace NaN values with empty strings to avoid JSON serialization errors
+    final_df = final_df.fillna("")
     final_df.to_excel(excel_file, index=False)
     logger.info(f"Updated Excel file with collision detection for {len(df_to_process)} functions: {excel_file}")
 
@@ -110,9 +113,16 @@ def find_collision_candidates(df: pd.DataFrame, config: Dict) -> Set[Tuple[str, 
     try:
         # Get embeddings for all functions
         texts = df[COL_TEXT].tolist()
+        
+        # Select appropriate embedding model based on AI mode
+        if config['ai_mode'] == 'online':
+            embedding_model = 'text-embedding-3-small'  # OpenAI's embedding model
+        else:
+            embedding_model = config['embedding_model']  # Local or alternative model
+        
         embeddings = get_embedding_from_server(
             create_ai_client(config),
-            config['embedding_model'],
+            embedding_model,
             texts
         )
 
