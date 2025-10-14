@@ -6,10 +6,14 @@ import time
 import re
 import sys
 import subprocess
+import inspect
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import logging
+from logging.handlers import RotatingFileHandler
 
 import numpy as np
 import pandas as pd
@@ -31,6 +35,57 @@ from openai import (
     RateLimitError,
     AuthenticationError,
 )
+
+if not hasattr(inspect, "getargspec"):
+    # Python 3.11+ shim for deprecated inspect.getargspec used by pymorphy2.
+    ArgSpec = namedtuple("ArgSpec", ["args", "varargs", "keywords", "defaults"])
+
+    def _compat_getargspec(func: Callable[..., Any]) -> ArgSpec:
+        spec = inspect.getfullargspec(func)
+        return ArgSpec(spec.args, spec.varargs, spec.varkw, spec.defaults)
+
+    inspect.getargspec = _compat_getargspec  # type: ignore[attr-defined]
+
+
+LOGGER = logging.getLogger("hierarchy_gui")
+LOGS_DIR = Path(__file__).resolve().parent / "logs"
+LOG_FILE = LOGS_DIR / "hierarchy_gui.log"
+if not LOGGER.handlers:
+    LOGGER.setLevel(logging.DEBUG)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        LOGS_DIR = Path.cwd()
+    LOG_FILE = LOGS_DIR / "hierarchy_gui.log"
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.DEBUG)
+    stream_handler.setFormatter(formatter)
+    file_handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=5_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    LOGGER.addHandler(stream_handler)
+    LOGGER.addHandler(file_handler)
+    LOGGER.propagate = False
+
+LOG_LEVELS: Dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "SUCCESS": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+
+
+def _emit_log(level: str, message: str) -> None:
+    LOGGER.log(LOG_LEVELS.get(level.upper(), logging.INFO), message)
 
 
 SYSTEM_PROMPT = (
@@ -245,10 +300,11 @@ class HierarchyAnalyzer:
             prepared_url = prepare_api_base_url(config.remote_server_url)
             if not prepared_url:
                 raise ValueError("Не указан адрес сервера эмбеддингов.")
+            http_timeout = httpx.Timeout(30.0, connect=10.0, read=30.0, write=30.0)
             self.remote_embed_client = OpenAI(
                 base_url=prepared_url,
                 api_key=config.remote_api_key or "not-needed",
-                http_client=httpx.Client(timeout=60.0),
+                http_client=httpx.Client(timeout=http_timeout),
             )
             self.active_model_name = config.remote_model_name
         else:
@@ -262,6 +318,7 @@ class HierarchyAnalyzer:
         self.duplicate_vector_indices: List[int] = []
 
     def _log(self, message: str, level: str = "INFO") -> None:
+        _emit_log(level, message)
         payload = {
             "level": level.upper(),
             "message": message,
@@ -357,6 +414,14 @@ class HierarchyAnalyzer:
             valid_rows[i : i + self.config.embed_batch_size]
             for i in range(0, len(valid_rows), self.config.embed_batch_size)
         ]
+        total_batches = len(batches)
+        total_items = len(valid_rows)
+        self._log(
+            f"{PERSONA_TITLE}: Планирую {total_items} текстов для удалённых эмбеддингов "
+            f"в {total_batches} батчах (batch_size={self.config.embed_batch_size}, "
+            f"workers={self.config.embed_workers}).",
+            level="DEBUG",
+        )
         task_queue: "queue.Queue[List[Tuple[int, str]]]" = queue.Queue()
         for batch in batches:
             task_queue.put(batch)
@@ -376,6 +441,12 @@ class HierarchyAnalyzer:
 
                 indices = [item[0] for item in batch]
                 payload = [item[1] for item in batch]
+                batch_label = f"{indices[0]}..{indices[-1]}" if len(indices) > 1 else f"{indices[0]}"
+                self._log(
+                    f"{PERSONA_TITLE}: Воркер {threading.current_thread().name} обрабатывает индексы {batch_label} "
+                    f"(размер батча {len(indices)}).",
+                    level="DEBUG",
+                )
                 try:
                     vectors = self._request_remote_embeddings(payload)
                     if vectors is None:
@@ -443,13 +514,27 @@ class HierarchyAnalyzer:
             if self.stop_event.is_set():
                 return None
             try:
+                start = time.time()
+                self._log(
+                    f"{PERSONA_TITLE}: Запрос эмбеддингов (batch={len(texts)}, попытка {attempt + 1}/3).",
+                    level="DEBUG",
+                )
                 response = self.remote_embed_client.embeddings.create(
                     model=self.config.remote_model_name,
                     input=texts,
                 )
+                elapsed = time.time() - start
+                self._log(
+                    f"{PERSONA_TITLE}: Эмбеддинги получены за {elapsed:.2f} с (batch={len(texts)}).",
+                    level="DEBUG",
+                )
                 return [item.embedding for item in response.data]
             except Exception as error:
                 last_error = str(error)
+                self._log(
+                    f"{PERSONA_TITLE}: Ошибка запроса эмбеддингов (batch={len(texts)}, попытка {attempt + 1}/3): {error}",
+                    level="WARNING",
+                )
                 time.sleep(1.0)
         self._log(
             f"{PERSONA_TITLE}: Ошибка запроса эмбеддингов — {last_error}",
@@ -1901,6 +1986,7 @@ class HierarchyAnalyzerApp:
             self.output_dir_var.set(directory)
 
     def _push_log(self, message: str, level: str = "INFO") -> None:
+        _emit_log(level, message)
         self.log_queue.put(
             (
                 "log",

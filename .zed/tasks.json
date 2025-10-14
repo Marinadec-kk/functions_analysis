@@ -20,7 +20,7 @@
   },
   {
     "label": "Run duplicates checker",
-    "command": "python scripts/5_duplicates_check.py"
+    "command": "python scripts/5_dublicates_check.py"
   },
   {
     "label": "Run MD sharder",
