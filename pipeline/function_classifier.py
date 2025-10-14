@@ -19,9 +19,10 @@ import pandas as pd
 import numpy as np
 from openai import OpenAI, APIConnectionError, RateLimitError, APITimeoutError
 import httpx
+from tqdm import tqdm
 
 from .config import setup_logging
-from .utils import load_prompt, prepare_api_base_url, get_embedding_from_server
+from .utils import load_prompt, prepare_api_base_url, get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +114,6 @@ def get_similarity_suggestions(df_to_process: pd.DataFrame, config: Dict) -> Dic
         # Read universal functions for similarity comparison
         universal_df = pd.read_json(universal_file)
 
-        # Create client for embeddings
-        if config['ai_mode'] == 'online':
-            embed_client = OpenAI(
-                api_key=config['ai_api_key'],
-                http_client=httpx.Client(timeout=60.0)
-            )
-        else:
-            embed_client = OpenAI(
-                base_url=prepare_api_base_url(config['embedding_server']),
-                api_key="not-needed",
-                http_client=httpx.Client(timeout=60.0)
-            )
-
         # Check if universal_df has required columns
         if 'function' not in universal_df.columns:
             logger.warning("Universal functions file missing 'function' column, skipping similarity suggestions")
@@ -139,14 +127,7 @@ def get_similarity_suggestions(df_to_process: pd.DataFrame, config: Dict) -> Dic
 
         # Get embeddings for all texts
         all_texts = list(df_to_process[COL_TEXT]) + list(universal_df['function'])
-        
-        # Select appropriate embedding model based on AI mode
-        if config['ai_mode'] == 'online':
-            embedding_model = 'text-embedding-3-small'  # OpenAI's embedding model
-        else:
-            embedding_model = config['embedding_model']  # Local or alternative model
-        
-        embeddings = get_embedding_from_server(embed_client, embedding_model, all_texts)
+        embeddings = get_embeddings(config, all_texts, logger)
 
         if embeddings is None or len(embeddings) != len(all_texts):
             logger.warning("Failed to get embeddings for similarity suggestions")
@@ -196,21 +177,19 @@ def process_functions_with_ai(df_to_process: pd.DataFrame, config: Dict, prompts
 
     results = []
 
-    for idx, row in df_to_process.iterrows():
+    for idx, row in tqdm(df_to_process.iterrows(), total=len(df_to_process), desc="Classifying functions", unit="func"):
         try:
             result = process_single_function(client, row, config, prompts, suggestions_map)
             if result is not None:
                 results.append(result)
-                logger.info(f"Processed function {row[COL_ID]}: {result.get(COL_FINAL_LABEL, 'ERROR')}")
+                logger.debug(f"Processed function {row[COL_ID]}: {result.get(COL_FINAL_LABEL, 'ERROR')}")
             else:
                 logger.error(f"Failed to process function {row[COL_ID]}")
-                # Add row with error status when process_single_function returns None
                 error_result = row.copy()
                 error_result[COL_FINAL_LABEL] = "ОШИБКА"
                 results.append(error_result)
         except Exception as e:
             logger.error(f"Error processing function {row[COL_ID]}: {e}")
-            # Add row with error status
             error_result = row.copy()
             error_result[COL_FINAL_LABEL] = "ОШИБКА"
             results.append(error_result)
@@ -271,8 +250,8 @@ def call_ai_classifier(client: OpenAI, row: pd.Series, prompts: Dict, config: Di
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text}
                 ],
-                temperature=1.0,
-                max_completion_tokens=4000,
+                temperature=config['ai_temperature'],
+                max_completion_tokens=config['ai_max_tokens'],
                 top_p=1,
                 frequency_penalty=0,
                 presence_penalty=0,

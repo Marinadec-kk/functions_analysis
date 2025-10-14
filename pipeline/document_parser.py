@@ -19,6 +19,7 @@ import pandas as pd
 from docx import Document
 from openai import OpenAI, APIConnectionError, RateLimitError, APITimeoutError
 import httpx
+from tqdm import tqdm
 
 from .config import setup_logging
 from .utils import load_prompt, prepare_api_base_url
@@ -45,11 +46,11 @@ def run_document_parser(config: Dict) -> str:
 
     # Process documents
     all_results = []
-    for doc_path in documents:
+    for doc_path in tqdm(documents, desc="Processing documents", unit="doc"):
         try:
             result = process_document(doc_path, prompt, config)
             if result:
-                all_results.extend(result)  # Extend with the list of function dictionaries
+                all_results.extend(result)
         except Exception as e:
             logger.error(f"Failed to process {doc_path}: {e}")
             continue
@@ -242,8 +243,8 @@ def extract_government_body_name(paragraphs: List[str], filename: str, prompt: s
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": full_text},
                 ],
-                "temperature": 1.0,
-                "max_completion_tokens": 4000,
+                "temperature": config['ai_temperature'],
+                "max_completion_tokens": config['ai_max_tokens'],
                 "top_p": 1,
                 "frequency_penalty": 0,
                 "presence_penalty": 0,

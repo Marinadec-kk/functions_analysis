@@ -146,6 +146,56 @@ def run_stage(stage_num: int, config: Dict, excel_file: str, logger) -> str:
         return excel_file
 
 
+def truncate_api_key(key: str) -> str:
+    """Truncate API key for safe logging."""
+    if not key or len(key) < 8:
+        return "***"
+    return f"{key[:4]}...{key[-4:]}"
+
+def log_configuration(config: Dict, logger):
+    """Log all configuration parameters at startup."""
+    logger.info("=" * 60)
+    logger.info("CONFIGURATION PARAMETERS")
+    logger.info("=" * 60)
+    
+    logger.info("Core Settings:")
+    logger.info(f"  Project Root: {config['project_root']}")
+    logger.info(f"  Input Folder: {config['input_folder']}")
+    logger.info(f"  Output Excel: {config['output_excel']}")
+    logger.info(f"  Output Markdown: {config['output_markdown']}")
+    logger.info(f"  Spheres File: {config['spheres_file']}")
+    logger.info(f"  Universal Functions: {config['universal_functions']}")
+    
+    logger.info("")
+    logger.info("AI Configuration:")
+    logger.info(f"  AI Mode: {config['ai_mode']}")
+    logger.info(f"  AI Model: {config['ai_model']}")
+    
+    if config.get('ai_api_key'):
+        logger.info(f"  API Key: {truncate_api_key(config['ai_api_key'])}")
+    
+    logger.info(f"  Embedding Server: {config['embedding_server'] or 'Not configured'}")
+    logger.info(f"  Embedding Model: {config['embedding_model']}")
+    logger.info(f"  Use Local Embeddings: {config['use_local_embeddings']}")
+    
+    logger.info("")
+    logger.info("Model Parameters:")
+    logger.info(f"  Temperature: {config['ai_temperature']}")
+    logger.info(f"  Max Tokens: {config['ai_max_tokens']}")
+    
+    logger.info("")
+    logger.info("Processing Parameters:")
+    logger.info(f"  Similarity Threshold: {config['similarity_threshold']}")
+    logger.info(f"  Universal Similarity Threshold: {config['universal_threshold']}")
+    logger.info(f"  Embedding Workers: {config['embedding_workers']}")
+    logger.info(f"  AI Workers: {config['ai_workers']}")
+    logger.info(f"  Batch Size: {config['batch_size']}")
+    
+    logger.info("")
+    logger.info("Logging:")
+    logger.info(f"  Log Level: {config['log_level']}")
+    logger.info("=" * 60)
+
 def main():
     """Main pipeline execution"""
     args = parse_arguments()
@@ -162,10 +212,8 @@ def main():
     validate_config(config)
     logger = setup_logging(config)
     
-    logger.info("Configuration loaded successfully")
-    logger.info(f"AI Mode: {config['ai_mode']}")
-    logger.info(f"Input folder: {config['input_folder']}")
-    logger.info(f"Output Excel: {config['output_excel']}")
+    # Log all configuration parameters
+    log_configuration(config, logger)
     
     # Determine which stages to run
     if args.stages:

@@ -66,10 +66,11 @@ def load_config() -> Dict[str, Any]:
     if ai_mode == 'online' and not os.getenv('OPENAI_API_KEY'):
         raise ValueError("OPENAI_API_KEY is required when AI_MODE='online'")
     
-    # Check for embedding server if in local or alternative mode
+    # Check for embedding server if in local or alternative mode (unless using local embeddings)
+    use_local_embeddings = os.getenv('USE_LOCAL_EMBEDDINGS', 'true').lower() == 'true'
     if ai_mode in ('local', 'alternative'):
-        if not os.getenv('EMBEDDING_SERVER'):
-            raise ValueError(f"EMBEDDING_SERVER is required when AI_MODE='{ai_mode}'")
+        if not use_local_embeddings and not os.getenv('EMBEDDING_SERVER'):
+            raise ValueError(f"EMBEDDING_SERVER is required when AI_MODE='{ai_mode}' and USE_LOCAL_EMBEDDINGS=false")
         if not os.getenv('EMBEDDING_MODEL'):
             raise ValueError(f"EMBEDDING_MODEL is required when AI_MODE='{ai_mode}'")
 
@@ -87,8 +88,13 @@ def load_config() -> Dict[str, Any]:
         'ai_mode': os.getenv('AI_MODE'),
         'ai_api_key': os.getenv('OPENAI_API_KEY'),
         'ai_model': os.getenv('AI_MODEL'),
-        'embedding_server': os.getenv('EMBEDDING_SERVER'),
+        'embedding_server': os.getenv('EMBEDDING_SERVER', ''),
         'embedding_model': os.getenv('EMBEDDING_MODEL'),
+        'use_local_embeddings': os.getenv('USE_LOCAL_EMBEDDINGS', 'true').lower() == 'true',
+
+        # Model Parameters
+        'ai_temperature': float(os.getenv('AI_TEMPERATURE', '1.0')),
+        'ai_max_tokens': int(os.getenv('AI_MAX_TOKENS', '4000')),
 
         # Processing Parameters
         'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD')),

@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict, Counter
 
 import pandas as pd
+from tqdm import tqdm
 
 from .config import setup_logging
 
@@ -123,7 +124,7 @@ def create_level_markdown_file(level: str, functions: List[pd.Series], output_fo
     content_lines.append("")
 
     # Generate content for each executor
-    for executor in sorted(executor_groups.keys()):
+    for executor in tqdm(sorted(executor_groups.keys()), desc="Generating executor docs", unit="exec"):
         functions_list = executor_groups[executor]
 
         clean_executor = sanitize_filename(executor)

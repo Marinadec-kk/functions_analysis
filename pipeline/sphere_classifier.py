@@ -18,6 +18,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import pandas as pd
 from openai import OpenAI, APIConnectionError, RateLimitError, APITimeoutError
 import httpx
+from tqdm import tqdm
 
 from .config import setup_logging
 from .utils import load_prompt, prepare_api_base_url
@@ -172,21 +173,19 @@ def process_functions_for_spheres(df_to_process: pd.DataFrame, config: Dict, pro
 
     results = []
 
-    for idx, row in df_to_process.iterrows():
+    for idx, row in tqdm(df_to_process.iterrows(), total=len(df_to_process), desc="Classifying spheres", unit="func"):
         try:
             result = process_single_function_for_sphere(client, row, config, prompt)
             if result is not None:
                 results.append(result)
-                logger.info(f"Processed sphere for function {row[COL_ID]}: {result.get(COL_SPHERE, 'ERROR')}")
+                logger.debug(f"Processed sphere for function {row[COL_ID]}: {result.get(COL_SPHERE, 'ERROR')}")
             else:
                 logger.error(f"Failed to process sphere for function {row[COL_ID]}")
-                # Add row with error status when process_single_function_for_sphere returns None
                 error_result = row.copy()
                 error_result[COL_SPHERE] = "ОШИБКА"
                 results.append(error_result)
         except Exception as e:
             logger.error(f"Error processing sphere for function {row[COL_ID]}: {e}")
-            # Add row with error status
             error_result = row.copy()
             error_result[COL_SPHERE] = "ОШИБКА"
             results.append(error_result)
@@ -217,8 +216,8 @@ def process_single_function_for_sphere(client: OpenAI, row: pd.Series, config: D
                     {"role": "system", "content": full_prompt},
                     {"role": "user", "content": row[COL_TEXT]}
                 ],
-                temperature=1.0,
-                max_completion_tokens=4000,
+                temperature=config['ai_temperature'],
+                max_completion_tokens=config['ai_max_tokens'],
                 top_p=1,
                 frequency_penalty=0,
                 presence_penalty=0,

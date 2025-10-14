@@ -19,9 +19,10 @@ import pandas as pd
 import numpy as np
 from openai import OpenAI, APIConnectionError, RateLimitError, APITimeoutError
 import httpx
+from tqdm import tqdm
 
 from .config import setup_logging
-from .utils import load_prompt, prepare_api_base_url, get_embedding_from_server
+from .utils import load_prompt, prepare_api_base_url, get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -113,18 +114,7 @@ def find_collision_candidates(df: pd.DataFrame, config: Dict) -> Set[Tuple[str, 
     try:
         # Get embeddings for all functions
         texts = df[COL_TEXT].tolist()
-        
-        # Select appropriate embedding model based on AI mode
-        if config['ai_mode'] == 'online':
-            embedding_model = 'text-embedding-3-small'  # OpenAI's embedding model
-        else:
-            embedding_model = config['embedding_model']  # Local or alternative model
-        
-        embeddings = get_embedding_from_server(
-            create_ai_client(config),
-            embedding_model,
-            texts
-        )
+        embeddings = get_embeddings(config, texts, logger)
 
         if embeddings is None or len(embeddings) != len(texts):
             logger.warning("Failed to get embeddings for collision detection")
@@ -164,7 +154,7 @@ def verify_collisions_with_ai(df: pd.DataFrame, collision_pairs: Set[Tuple[str, 
     # Create ID to row mapping
     id_to_row = {row[COL_ID]: row for _, row in df.iterrows()}
 
-    for pair in collision_pairs:
+    for pair in tqdm(collision_pairs, desc="Verifying collisions", unit="pair"):
         try:
             id1, id2 = pair
             func1 = id_to_row[id1]
@@ -178,7 +168,7 @@ def verify_collisions_with_ai(df: pd.DataFrame, collision_pairs: Set[Tuple[str, 
 
             verified_collisions[pair] = verdict
 
-            logger.info(f"Verified collision pair {pair}: {verdict}")
+            logger.debug(f"Verified collision pair {pair}: {verdict}")
 
         except Exception as e:
             logger.error(f"Error verifying collision pair {pair}: {e}")
@@ -223,8 +213,8 @@ def call_ai_for_collision_verification(prompt: str, config: Dict) -> str:
                     {"role": "system", "content": "You are an expert in detecting administrative collisions in government functions."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=1.0,
-                max_completion_tokens=4000,
+                temperature=config['ai_temperature'],
+                max_completion_tokens=config['ai_max_tokens'],
                 top_p=1,
                 frequency_penalty=0,
                 presence_penalty=0,
