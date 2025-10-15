@@ -14,3 +14,4 @@ venv/
 # Other
 .env
 uv.lock
+.zed
