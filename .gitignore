@@ -10,3 +10,7 @@ venv/
 
 # OS-specific
 .DS_Store
+
+# Other
+.env
+uv.lock

@@ -276,6 +276,37 @@ def _parse_full_go_name(full_name: str) -> dict:
     return {"main_go": normalized_name, "parent_go": None}
 
 
+def build_anchor_context(paragraphs, window_size: int = 10) -> str | None:
+    """Формирует сэмпл вокруг первого вхождения якоря «положение о»."""
+    if not paragraphs:
+        return None
+
+    full_text = "\n".join(p.strip() for p in paragraphs if p)
+    if not full_text.strip():
+        return None
+
+    normalized_text = re.sub(r"\s+", " ", full_text).strip()
+    if not normalized_text:
+        return None
+
+    anchor_pattern = re.compile(r"\bположение\s*о\b", re.IGNORECASE)
+    match = anchor_pattern.search(normalized_text)
+    if not match:
+        return None
+
+    before_text = normalized_text[: match.start()].strip()
+    after_text = normalized_text[match.end() :].strip()
+
+    before_words = before_text.split()
+    after_words = after_text.split()
+
+    anchor_fragment = normalized_text[match.start() : match.end()].strip()
+    context_words = (
+        before_words[-window_size:] + [anchor_fragment] + after_words[:window_size]
+    )
+    return " ".join(context_words).strip() if context_words else None
+
+
 # -----------------------------------
 # Основной класс приложения
 # -----------------------------------
@@ -811,14 +842,23 @@ class ParserApp:
     @staticmethod
     def _extract_full_go_name(paragraphs, filename, config, client):
         """Этап 1: Извлекает полное иерархическое название ГО."""
-        context_paragraphs = paragraphs[:150]
-        full_text = "\n".join(p.strip() for p in context_paragraphs)
+        sample_text = build_anchor_context(paragraphs)
+        fallback_used = False
+        if not sample_text:
+            fallback_used = True
+            context_paragraphs = paragraphs[:100]
+            sample_text = "\n".join(p.strip() for p in context_paragraphs)
 
-        if not full_text.strip():
+        if not sample_text.strip():
             log_to_terminal(
-                f"❌ Пропуск {filename}: не найден текст для анализа в первых 150 абзацах."
+                f"❌ Пропуск {filename}: не удалось подготовить текст для анализа."
             )
             return None
+
+        if fallback_used:
+            log_to_terminal(
+                f"⚠️ {filename}: якорь 'положение о' не найден. Используется резервный фрагмент текста."
+            )
 
         max_retries = 3
         delay = 2.0
@@ -828,7 +868,7 @@ class ParserApp:
                     "model": config["model"],
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT_EXTRACT_FULL_NAME},
-                        {"role": "user", "content": full_text},
+                        {"role": "user", "content": sample_text},
                     ],
                     "model": "gpt-4o",
                     "temperature": 1.0,
