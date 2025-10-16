@@ -102,6 +102,8 @@ def load_config() -> Dict[str, Any]:
         'embedding_workers': int(os.getenv('EMBEDDING_WORKERS')),
         'ai_workers': int(os.getenv('AI_WORKERS')),
         'batch_size': int(os.getenv('BATCH_SIZE')),
+        'top_k_spheres': int(os.getenv('TOP_K_SPHERES')),
+        'grouping_columns': [col.strip() for col in os.getenv('GROUPING_COLUMNS', 'TrueType,Sphere_3').split(',')],
 
         # Prompt files (converted to absolute paths)
         'prompt_files': {

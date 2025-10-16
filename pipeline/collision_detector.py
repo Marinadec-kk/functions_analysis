@@ -4,8 +4,10 @@ Collision Detector - Detect and resolve duplicate functions using embeddings and
 This module handles:
 1. Reading Excel file from sphere classifier
 2. Finding potentially similar functions using embeddings
-3. Using AI to verify if similarities are actual collisions
-4. Updating Excel file with collision detection results
+3. Filtering out universal functions to reduce false positives
+4. Group-based analysis for efficient collision detection
+5. Using AI to verify if similarities are actual collisions
+6. Updating Excel file with collision detection results
 """
 
 import os
@@ -14,6 +16,7 @@ import json
 import time
 import logging
 from typing import Dict, List, Tuple, Optional, Set, Any
+from collections import defaultdict
 
 import pandas as pd
 import numpy as np
@@ -37,7 +40,102 @@ COL_COLLISION_VERDICT = "Collision_Verdict"
 
 # Configuration constants
 DEFAULT_SIMILARITY_THRESHOLD = 0.50
+DEFAULT_UNIVERSAL_SIMILARITY_THRESHOLD = 0.75
 DEFAULT_BATCH_SIZE = 64
+DEFAULT_GROUPING_COLUMNS = ["TrueType", "Sphere_3"]
+
+
+def load_universal_functions(json_path: str) -> List[str]:
+    """Load universal function texts from JSON file.
+    
+    Args:
+        json_path: Path to universal functions JSON file
+        
+    Returns:
+        List of universal function texts
+    """
+    if not json_path or not os.path.isfile(json_path):
+        logger.warning(f"Universal functions file not found: {json_path}")
+        return []
+    
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        universal_texts = set()
+        
+        def collect_functions(node: Any):
+            """Recursively collect function texts from nested structure."""
+            if isinstance(node, dict):
+                if 'function' in node and isinstance(node['function'], str):
+                    text = node['function'].strip()
+                    if text:
+                        universal_texts.add(text)
+                for value in node.values():
+                    collect_functions(value)
+            elif isinstance(node, list):
+                for item in node:
+                    collect_functions(item)
+        
+        collect_functions(data)
+        result = sorted(list(universal_texts))
+        logger.info(f"Loaded {len(result)} universal functions from {json_path}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to load universal functions from {json_path}: {e}")
+        return []
+
+
+def filter_universal_functions(df: pd.DataFrame, embeddings: List[List[float]], 
+                               universal_embeddings: List[List[float]], 
+                               threshold: float) -> pd.DataFrame:
+    """Filter out functions that match universal functions.
+    
+    Args:
+        df: DataFrame with functions
+        embeddings: Embeddings for df functions
+        universal_embeddings: Embeddings for universal functions
+        threshold: Similarity threshold for universal match
+        
+    Returns:
+        Filtered DataFrame (non-universal functions only)
+    """
+    if not universal_embeddings or len(embeddings) == 0:
+        return df
+    
+    try:
+        # Calculate similarity between each function and all universal functions
+        func_embeds = np.array(embeddings)
+        univ_embeds = np.array(universal_embeddings)
+        
+        # Normalize embeddings
+        func_norms = np.linalg.norm(func_embeds, axis=1, keepdims=True)
+        univ_norms = np.linalg.norm(univ_embeds, axis=1, keepdims=True)
+        
+        func_embeds_norm = func_embeds / np.where(func_norms == 0, 1e-10, func_norms)
+        univ_embeds_norm = univ_embeds / np.where(univ_norms == 0, 1e-10, univ_norms)
+        
+        # Cosine similarity: func x universal
+        similarities = np.dot(func_embeds_norm, univ_embeds_norm.T)
+        
+        # Find max similarity to any universal function
+        max_similarities = np.max(similarities, axis=1)
+        
+        # Keep only functions below universal threshold
+        non_universal_mask = max_similarities < threshold
+        
+        original_count = len(df)
+        filtered_df = df[non_universal_mask].copy()
+        filtered_count = len(filtered_df)
+        
+        logger.info(f"Universal function filter: {original_count - filtered_count} functions filtered out, {filtered_count} remaining")
+        
+        return filtered_df
+        
+    except Exception as e:
+        logger.error(f"Error filtering universal functions: {e}")
+        return df
 
 
 def run_collision_detector(config: Dict, excel_file: str) -> str:
@@ -46,6 +144,15 @@ def run_collision_detector(config: Dict, excel_file: str) -> str:
 
     logger.info(f"Starting collision detection for: {excel_file}")
 
+    # Load universal functions
+    universal_texts = load_universal_functions(config.get('universal_functions', ''))
+    universal_embeddings = []
+    if universal_texts:
+        logger.info(f"Generating embeddings for {len(universal_texts)} universal functions...")
+        universal_embeddings = get_embeddings(config, universal_texts, logger)
+        if universal_embeddings:
+            logger.info(f"Generated {len(universal_embeddings)} universal function embeddings")
+    
     # Load prompt
     prompt_path = config['prompt_files']['collision_detector']
     prompt = load_prompt(prompt_path)
@@ -69,8 +176,8 @@ def run_collision_detector(config: Dict, excel_file: str) -> str:
         logger.info("No functions need collision detection")
         return excel_file
 
-    # Find potential collision pairs using embeddings
-    collision_pairs = find_collision_candidates(df_to_process, config)
+    # Find potential collision pairs using embeddings (with grouping and universal filtering)
+    collision_pairs = find_collision_candidates(df_to_process, config, universal_embeddings)
 
     if not collision_pairs:
         logger.info("No collision candidates found")
@@ -107,43 +214,142 @@ def run_collision_detector(config: Dict, excel_file: str) -> str:
     return excel_file
 
 
-def find_collision_candidates(df: pd.DataFrame, config: Dict) -> Set[Tuple[str, str]]:
-    """Find potential collision pairs using embeddings."""
+def find_collision_candidates(df: pd.DataFrame, config: Dict, universal_embeddings: List[List[float]] = None) -> Set[Tuple[str, str]]:
+    """Find potential collision pairs using embeddings with grouping and universal filtering.
+    
+    Args:
+        df: DataFrame with functions to analyze
+        config: Configuration dictionary
+        universal_embeddings: Optional list of universal function embeddings for filtering
+        
+    Returns:
+        Set of collision pairs (tuples of sorted IDs)
+    """
+    all_collision_pairs = set()
+    
+    # Get grouping columns from config
+    grouping_cols = config.get('grouping_columns', DEFAULT_GROUPING_COLUMNS)
+    
+    # Filter grouping columns to only those that exist in DataFrame
+    grouping_cols = [col for col in grouping_cols if col in df.columns]
+    
+    if not grouping_cols:
+        logger.warning("No valid grouping columns found, analyzing all functions together")
+        # Analyze all functions as one group
+        return _find_candidates_in_group(df, config, universal_embeddings, "All Functions")
+    
+    # Group data and analyze each group separately
+    logger.info(f"Grouping functions by: {', '.join(grouping_cols)}")
+    grouped = df.groupby(grouping_cols, dropna=False)
+    total_groups = grouped.ngroups
+    logger.info(f"Found {total_groups} groups to analyze")
+    
+    for group_idx, (group_name, group_df) in enumerate(tqdm(grouped, desc="Analyzing groups", unit="group"), 1):
+        if isinstance(group_name, tuple):
+            group_display = ", ".join([f"{col}={val}" for col, val in zip(grouping_cols, group_name)])
+        else:
+            group_display = str(group_name)
+        
+        # Filter out "Общие функции" type within each group
+        if COL_TYPE in group_df.columns:
+            group_df_filtered = group_df[group_df[COL_TYPE] != "Общие функции"].copy()
+            if len(group_df_filtered) < len(group_df):
+                logger.debug(f"Group '{group_display}': Filtered out {len(group_df) - len(group_df_filtered)} 'Общие функции'")
+        else:
+            group_df_filtered = group_df.copy()
+        
+        # Skip groups with less than 2 functions
+        if len(group_df_filtered) < 2:
+            logger.debug(f"Group '{group_display}': Skipped (only {len(group_df_filtered)} functions)")
+            continue
+        
+        # Find candidates in this group
+        group_pairs = _find_candidates_in_group(group_df_filtered, config, universal_embeddings, group_display)
+        
+        if group_pairs:
+            logger.info(f"Group '{group_display}': Found {len(group_pairs)} collision candidates")
+            all_collision_pairs.update(group_pairs)
+    
+    logger.info(f"Total collision candidates found across all groups: {len(all_collision_pairs)}")
+    return all_collision_pairs
+
+
+def _find_candidates_in_group(group_df: pd.DataFrame, config: Dict, 
+                               universal_embeddings: List[List[float]], 
+                               group_name: str) -> Set[Tuple[str, str]]:
+    """Find collision candidates within a single group.
+    
+    Args:
+        group_df: DataFrame with functions in this group
+        config: Configuration dictionary
+        universal_embeddings: Optional list of universal function embeddings
+        group_name: Display name for this group (for logging)
+        
+    Returns:
+        Set of collision pairs for this group
+    """
     collision_pairs = set()
-
+    
     try:
-        # Get embeddings for all functions
-        texts = df[COL_TEXT].tolist()
+        # Get embeddings for functions in this group
+        texts = group_df[COL_TEXT].fillna("").tolist()
         embeddings = get_embeddings(config, texts, logger)
-
+        
         if embeddings is None or len(embeddings) != len(texts):
-            logger.warning("Failed to get embeddings for collision detection")
+            logger.warning(f"Group '{group_name}': Failed to get embeddings")
             return collision_pairs
-
+        
+        # Filter out universal functions if threshold is set
+        universal_threshold = config.get('universal_threshold', DEFAULT_UNIVERSAL_SIMILARITY_THRESHOLD)
+        if universal_embeddings and universal_threshold:
+            original_len = len(group_df)
+            group_df_filtered = filter_universal_functions(
+                group_df.reset_index(drop=True), 
+                embeddings, 
+                universal_embeddings, 
+                universal_threshold
+            )
+            
+            if len(group_df_filtered) < original_len:
+                logger.debug(f"Group '{group_name}': {original_len - len(group_df_filtered)} universal functions filtered")
+                
+                # Get embeddings only for non-universal functions
+                # Re-index to align with filtered dataframe
+                filtered_indices = group_df_filtered.index.tolist()
+                embeddings = [embeddings[i] for i in filtered_indices]
+                group_df = group_df_filtered
+        
+        if len(group_df) < 2:
+            logger.debug(f"Group '{group_name}': < 2 functions remain after filtering")
+            return collision_pairs
+        
         # Calculate similarity matrix
         embeddings_array = np.array(embeddings)
         norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
-        # Avoid division by zero
         norms = np.where(norms == 0, 1e-10, norms)
-
+        
         # Cosine similarity matrix
         similarity_matrix = np.dot(embeddings_array, embeddings_array.T) / (norms @ norms.T)
-
+        
         # Find pairs with high similarity but different executors
         threshold = config.get('similarity_threshold', DEFAULT_SIMILARITY_THRESHOLD)
-
-        for i in range(len(df)):
-            for j in range(i + 1, len(df)):
-                if (similarity_matrix[i, j] >= threshold and
-                    df.iloc[i][COL_EXECUTOR] != df.iloc[j][COL_EXECUTOR]):
-                    pair = tuple(sorted([str(df.iloc[i][COL_ID]), str(df.iloc[j][COL_ID])]))
+        
+        group_df_reset = group_df.reset_index(drop=True)
+        for i in range(len(group_df_reset)):
+            for j in range(i + 1, len(group_df_reset)):
+                exec_i = group_df_reset.iloc[i][COL_EXECUTOR]
+                exec_j = group_df_reset.iloc[j][COL_EXECUTOR]
+                
+                # Only consider pairs from different executors
+                if (similarity_matrix[i, j] >= threshold and exec_i != exec_j):
+                    id_i = str(group_df_reset.iloc[i][COL_ID])
+                    id_j = str(group_df_reset.iloc[j][COL_ID])
+                    pair = tuple(sorted([id_i, id_j]))
                     collision_pairs.add(pair)
-
-        logger.info(f"Found {len(collision_pairs)} potential collision pairs")
-
+        
     except Exception as e:
-        logger.error(f"Error finding collision candidates: {e}")
-
+        logger.error(f"Error finding collision candidates in group '{group_name}': {e}")
+    
     return collision_pairs
 
 

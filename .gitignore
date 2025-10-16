@@ -217,10 +217,10 @@ __marimo__/
 
 # Custom
 input_documents
-data
 scripts
 md
 .env
 uv.lock
-
+results
 legacy
+files
