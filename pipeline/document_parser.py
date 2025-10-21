@@ -334,8 +334,7 @@ def extract_functions(paragraphs: List[str]) -> Tuple[List[str], str]:
         low = text.lower()
 
         if not in_section:
-            # Flexible header detection (aligned with 1_parsing.py):
-            # optional leading numbering and optional trailing colon, case-insensitive via `low`
+
             if re.match(r"^\s*(?:\d+\.?\s*)?функции:?\s*$", low):
                 in_section = True
                 logger.debug(f"Found functions section header: {text[:100]}")
