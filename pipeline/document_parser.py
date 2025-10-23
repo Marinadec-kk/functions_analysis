@@ -5,7 +5,7 @@ This module handles:
 1. Reading .docx and .doc files
 2. Extracting government body hierarchy using AI
 3. Parsing function sections from documents
-4. Creating initial Excel matrix with ID, FunctionText, Госорган, Вышестоящий
+4. Creating initial Excel matrix with ID, FunctionText, Worker, Parent, Level
 """
 
 import os
@@ -13,7 +13,8 @@ import re
 import json
 import time
 import logging
-from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Set
 
 import pandas as pd
 from docx import Document
@@ -26,17 +27,244 @@ from .utils import load_prompt, prepare_api_base_url
 
 logger = logging.getLogger(__name__)
 
+SECTION_ANCHOR_PATTERN = re.compile(r"\bположение\s+о\b", re.IGNORECASE)
+GLAVA_ANCHOR_PATTERN = re.compile(r"\bглава\s*1\b", re.IGNORECASE)
+FUNCTION_HEADER_PATTERN = re.compile(
+    r"^\s*(?:\d+\.?\s*)?функции(?:\s+(?:комитета|департамента))?\s*:?\s*$",
+    re.IGNORECASE,
+)
+SECTION_TERMINATOR_PATTERN = re.compile(r"^\s*(?:глава|раздел)\b", re.IGNORECASE)
+
+LEVEL_MAPPING = {
+    "министерство": "1",
+    "агентство": "1.1",
+    "комитет": "2.1",
+    "департамент": "2.2",
+    "управление": "2.3",
+    "служба": "2.4",
+    "центр": "3.1",
+    "институт": "3.2",
+}
+
+ROOT_PARENT_NAME = "Республика Казахстан"
+
+
+@dataclass
+class SectionResult:
+    full_go_name: str
+    main_go: str
+    parent_go: Optional[str]
+    functions: List[str]
+    source: str
+
+
+@dataclass
+class GovernmentNode:
+    name: str
+    full_name: str
+    parent_name: Optional[str]
+    abbreviation: str
+    functions: List[str] = field(default_factory=list)
+    children: Set[str] = field(default_factory=set)
+    level: Optional[str] = None
+    worker: Optional[str] = None
+    parent_worker: Optional[str] = None
+    id_prefix: Optional[str] = None
+
+
+def split_document_sections(paragraphs: List[str]) -> List[List[str]]:
+    """Split document into sections starting from 'Положение о ... Глава 1' anchors."""
+    anchors: List[int] = []
+    for idx, raw in enumerate(paragraphs):
+        text = (raw or "").strip()
+        if not text:
+            continue
+
+        normalized = " ".join(text.split())
+        if SECTION_ANCHOR_PATTERN.search(normalized) and _has_glava_anchor(
+            paragraphs, idx
+        ):
+            anchors.append(idx)
+
+    if not anchors:
+        return []
+
+    sections: List[List[str]] = []
+    for pos, start in enumerate(anchors):
+        end = anchors[pos + 1] if pos + 1 < len(anchors) else len(paragraphs)
+        sections.append(paragraphs[start:end])
+    return sections
+
+
+def _has_glava_anchor(
+    paragraphs: List[str], start_index: int, lookahead: int = 12
+) -> bool:
+    """Validate that 'Глава 1' appears shortly after the 'Положение' header."""
+    limit = min(len(paragraphs), start_index + lookahead + 1)
+    for idx in range(start_index, limit):
+        text = (paragraphs[idx] or "").strip()
+        if not text:
+            continue
+        normalized = " ".join(text.split())
+        if GLAVA_ANCHOR_PATTERN.search(normalized):
+            return True
+    return False
+
+
+def build_government_hierarchy(
+    section_results: List[SectionResult],
+) -> Dict[str, GovernmentNode]:
+    """Aggregate section data into government hierarchy nodes."""
+    nodes: Dict[str, GovernmentNode] = {}
+
+    for section in section_results:
+        main_name = section.main_go
+        parent_name = section.parent_go.strip() if section.parent_go else None
+
+        node = nodes.get(main_name)
+        if not node:
+            node = GovernmentNode(
+                name=main_name,
+                full_name=section.full_go_name or main_name,
+                parent_name=parent_name,
+                abbreviation=create_government_abbreviation(main_name),
+            )
+            nodes[main_name] = node
+        else:
+            if parent_name:
+                if node.parent_name and node.parent_name != parent_name:
+                    logger.warning(
+                        "Inconsistent parent detected for %s: %s -> %s",
+                        main_name,
+                        node.parent_name,
+                        parent_name,
+                    )
+                elif not node.parent_name:
+                    node.parent_name = parent_name
+
+            if section.full_go_name and len(section.full_go_name) > len(node.full_name):
+                node.full_name = section.full_go_name
+
+        node.functions.extend(section.functions)
+
+        if parent_name:
+            parent_node = nodes.get(parent_name)
+            if not parent_node:
+                parent_node = GovernmentNode(
+                    name=parent_name,
+                    full_name=parent_name,
+                    parent_name=None,
+                    abbreviation=create_government_abbreviation(parent_name),
+                )
+                nodes[parent_name] = parent_node
+            parent_node.children.add(main_name)
+
+    return nodes
+
+
+def compute_hierarchy_metadata(nodes: Dict[str, GovernmentNode]) -> None:
+    """Populate worker, parent, level, and ID prefix values across the hierarchy."""
+    root_abbreviation = create_government_abbreviation(ROOT_PARENT_NAME)
+    visited: Set[str] = set()
+    visiting: Set[str] = set()
+
+    def dfs(name: str) -> None:
+        if name in visited:
+            return
+        if name in visiting:
+            logger.warning("Cycle detected in hierarchy for %s", name)
+            visiting.remove(name)
+            return
+
+        visiting.add(name)
+        node = nodes[name]
+        parent_name = node.parent_name.strip() if node.parent_name else None
+        parent_node = nodes.get(parent_name) if parent_name else None
+
+        if parent_node:
+            dfs(parent_name)
+            parent_abbrev = parent_node.abbreviation
+            parent_worker = parent_node.worker or ROOT_PARENT_NAME
+            parent_prefix = parent_node.id_prefix or parent_node.abbreviation
+        else:
+            parent_abbrev = root_abbreviation
+            parent_worker = ROOT_PARENT_NAME
+            parent_prefix = ""
+
+        node.level = determine_level(node.name)
+        suffix = parent_abbrev if parent_abbrev else ""
+        node.worker = f"{node.full_name} {suffix}".strip()
+        node.parent_worker = parent_worker
+        node.id_prefix = (
+            f"{parent_prefix}-{node.abbreviation}"
+            if parent_prefix
+            else node.abbreviation
+        )
+
+        visited.add(name)
+        visiting.remove(name)
+
+        for child_name in sorted(node.children):
+            dfs(child_name)
+
+    for name in list(nodes.keys()):
+        if name not in visited:
+            dfs(name)
+
+
+def determine_level(name: str) -> str:
+    """Map the first word of a government body name to its classification level."""
+    if not isinstance(name, str):
+        return ""
+
+    tokens = re.findall(r"[A-Za-zА-Яа-яЁё]+", name)
+    if not tokens:
+        return ""
+
+    first_word = tokens[0].lower()
+    return LEVEL_MAPPING.get(first_word, "")
+
+
+def generate_output_rows(nodes: Dict[str, GovernmentNode]) -> List[Dict[str, str]]:
+    """Generate final flattened rows for the Excel output."""
+    records: List[Dict[str, str]] = []
+
+    for node in nodes.values():
+        if not node.functions:
+            continue
+
+        id_prefix = node.id_prefix
+        if not id_prefix:
+            logger.warning(
+                "ID prefix missing for %s; falling back to abbreviation", node.name
+            )
+            id_prefix = node.abbreviation
+
+        parent_value = node.parent_worker or ROOT_PARENT_NAME
+        worker_value = node.worker or node.full_name
+
+        for idx, func_text in enumerate(node.functions, start=1):
+            records.append(
+                {
+                    "ID": f"{id_prefix}-{idx}",
+                    "FunctionText": func_text,
+                    "Worker": worker_value,
+                    "Parent": parent_value,
+                    "Level": node.level or "",
+                }
+            )
+
+    return records
+
 
 def run_document_parser(config: Dict) -> str:
     """Parse documents and create initial Excel file."""
     logger = setup_logging(config)
 
-    # Load prompt
-    prompt_path = config['prompt_files']['document_parser_extract']
+    prompt_path = config["prompt_files"]["document_parser_extract"]
     prompt = load_prompt(prompt_path)
 
-    # Find all documents in input folder
-    input_folder = config['input_folder']
+    input_folder = config["input_folder"]
     documents = find_documents(input_folder)
 
     if not documents:
@@ -44,26 +272,33 @@ def run_document_parser(config: Dict) -> str:
 
     logger.info(f"Found {len(documents)} documents to process")
 
-    # Process documents
-    all_results = []
+    collected_sections: List[SectionResult] = []
     for doc_path in tqdm(documents, desc="Processing documents", unit="doc"):
         try:
-            result = process_document(doc_path, prompt, config)
-            if result:
-                all_results.extend(result)
+            section_payloads = process_document(doc_path, prompt, config)
+            if section_payloads:
+                collected_sections.extend(section_payloads)
         except Exception as e:
             logger.error(f"Failed to process {doc_path}: {e}")
             continue
 
-    if not all_results:
+    if not collected_sections:
         raise ValueError("No documents were successfully processed")
 
-    # Create Excel file (directory already created by validate_config)
-    df = pd.DataFrame(all_results)
-    output_path = config['output_excel']
+    hierarchy = build_government_hierarchy(collected_sections)
+    compute_hierarchy_metadata(hierarchy)
+    records = generate_output_rows(hierarchy)
+
+    if not records:
+        raise ValueError("No function records generated from processed documents")
+
+    df = pd.DataFrame(
+        records, columns=["ID", "FunctionText", "Worker", "Parent", "Level"]
+    )
+    output_path = config["output_excel"]
     df.to_excel(output_path, index=False)
 
-    logger.info(f"Created Excel file with {len(all_results)} functions: {output_path}")
+    logger.info(f"Created Excel file with {len(records)} functions: {output_path}")
     return output_path
 
 
@@ -85,129 +320,173 @@ def find_documents(folder_path: str) -> List[str]:
     return documents
 
 
-def process_document(doc_path: str, prompt: str, config: Dict) -> Optional[Dict]:
-    """Process a single document and extract functions."""
+def process_document(doc_path: str, prompt: str, config: Dict) -> List[SectionResult]:
+    """Process a single document and extract section data."""
     filename = os.path.basename(doc_path)
     logger.info(f"Processing: {filename}")
 
     try:
-        # Read document paragraphs
         paragraphs = read_document_paragraphs(doc_path)
 
-        # Extract government body name
-        full_go_name = extract_government_body_name(paragraphs, filename, prompt, config)
-        if not full_go_name:
-            logger.warning(f"Could not extract government body name from {filename}")
-            return None
+        sections = split_document_sections(paragraphs)
+        if not sections:
+            logger.warning(
+                f"No matching 'Положение' sections found in {filename}; document skipped"
+            )
+            return []
 
-        # Parse hierarchy
-        go_data = parse_government_hierarchy(full_go_name)
+        logger.info(f"Detected {len(sections)} section(s) in {filename}")
 
-        # Extract functions
-        functions, status = extract_functions(paragraphs)
-        if status != "OK":
-            logger.warning(f"No functions found in {filename}: {status}")
-            return None
+        processed_sections: List[SectionResult] = []
+        for index, section_paragraphs in enumerate(sections, start=1):
+            section_label = f"{filename} [section {index}]"
 
-        # Create abbreviation for ID
-        go_abbrev = create_government_abbreviation(go_data['main_go'])
-
-        # Create result entries (filter out empty function texts)
-        results = []
-        function_counter = 1
-        for func_text in functions:
-            # Skip empty or whitespace-only functions
-            if not func_text or not func_text.strip():
-                logger.warning(f"Skipping empty function text in {filename}")
+            full_go_name = extract_government_body_name(
+                section_paragraphs, section_label, prompt, config
+            )
+            if not full_go_name:
+                logger.warning(
+                    f"Could not extract government body name from {section_label}"
+                )
                 continue
-                
-            func_id = f"{go_abbrev}-{function_counter}"
-            results.append({
-                'ID': func_id,
-                'FunctionText': func_text.strip(),
-                'Госорган': go_data['main_go'],
-                'Вышестоящий': go_data.get('parent_go', ''),
-            })
-            function_counter += 1
 
-        logger.info(f"Extracted {len(results)} functions from {filename}")
-        return results
+            go_data = parse_government_hierarchy(full_go_name)
+            main_go = (go_data.get("main_go") or "").strip()
+            if not main_go:
+                logger.warning(
+                    f"Main government body not identified for {section_label}"
+                )
+                continue
+
+            parent_go = go_data.get("parent_go")
+            if isinstance(parent_go, str):
+                parent_go = parent_go.strip() or None
+            else:
+                parent_go = None
+
+            functions, status = extract_functions(section_paragraphs)
+            if status != "OK":
+                logger.warning(f"No functions found in {section_label}: {status}")
+                continue
+
+            filtered_functions = [
+                func.strip() for func in functions if func and func.strip()
+            ]
+            if not filtered_functions:
+                logger.warning(f"Filtered out empty functions in {section_label}")
+                continue
+
+            processed_sections.append(
+                SectionResult(
+                    full_go_name=full_go_name.strip(),
+                    main_go=main_go,
+                    parent_go=parent_go,
+                    functions=filtered_functions,
+                    source=section_label,
+                )
+            )
+
+        if not processed_sections:
+            logger.warning(f"No usable sections extracted from {filename}")
+            return []
+
+        total_functions = sum(len(section.functions) for section in processed_sections)
+        logger.info(
+            f"Extracted {total_functions} functions from {filename} across "
+            f"{len(processed_sections)} section(s)"
+        )
+
+        return processed_sections
 
     except Exception as e:
         logger.error(f"Error processing {filename}: {e}")
-        return None
+        return []
 
 
 def read_document_paragraphs(doc_path: str) -> List[str]:
     """Read paragraphs from .docx or .doc file."""
-    if doc_path.lower().endswith('.docx'):
+    if doc_path.lower().endswith(".docx"):
         doc = Document(doc_path)
         return [p.text for p in doc.paragraphs]
-    elif doc_path.lower().endswith('.doc'):
+    elif doc_path.lower().endswith(".doc"):
         # Convert .doc to .docx using LibreOffice, then read with python-docx
         import tempfile
         import subprocess
         import shutil
-        
+
         try:
             # Create a temporary directory for conversion
             temp_dir = tempfile.mkdtemp()
-            
+
             # Copy the .doc file to temp directory (LibreOffice needs write access to the directory)
             temp_doc = os.path.join(temp_dir, os.path.basename(doc_path))
             shutil.copy2(doc_path, temp_doc)
-            
+
             # Convert using LibreOffice headless mode
-            logger.info(f"Converting {os.path.basename(doc_path)} to .docx using LibreOffice...")
-            
+            logger.info(
+                f"Converting {os.path.basename(doc_path)} to .docx using LibreOffice..."
+            )
+
             # Try multiple possible LibreOffice commands
             libreoffice_commands = [
-                'libreoffice',
-                'soffice',
-                '/usr/bin/libreoffice',
-                '/usr/bin/soffice'
+                "libreoffice",
+                "soffice",
+                "/usr/bin/libreoffice",
+                "/usr/bin/soffice",
             ]
-            
+
             conversion_successful = False
             for cmd in libreoffice_commands:
                 try:
                     result = subprocess.run(
-                        [cmd, '--headless', '--convert-to', 'docx', '--outdir', temp_dir, temp_doc],
+                        [
+                            cmd,
+                            "--headless",
+                            "--convert-to",
+                            "docx",
+                            "--outdir",
+                            temp_dir,
+                            temp_doc,
+                        ],
                         capture_output=True,
                         text=True,
-                        timeout=30
+                        timeout=30,
                     )
-                    
+
                     if result.returncode == 0:
                         conversion_successful = True
                         logger.debug(f"Conversion successful using {cmd}")
                         break
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     continue
-            
+
             if not conversion_successful:
-                raise RuntimeError("LibreOffice not found or conversion failed. Install LibreOffice: sudo apt-get install libreoffice")
-            
+                raise RuntimeError(
+                    "LibreOffice not found or conversion failed. Install LibreOffice: sudo apt-get install libreoffice"
+                )
+
             # Find the converted .docx file
             base_name = os.path.splitext(os.path.basename(doc_path))[0]
-            converted_docx = os.path.join(temp_dir, base_name + '.docx')
-            
+            converted_docx = os.path.join(temp_dir, base_name + ".docx")
+
             if not os.path.exists(converted_docx):
                 raise FileNotFoundError(f"Converted file not found: {converted_docx}")
-            
+
             # Read the converted .docx file
             doc = Document(converted_docx)
             paragraphs = [p.text for p in doc.paragraphs]
-            
+
             # Clean up temporary directory
             try:
                 shutil.rmtree(temp_dir)
             except:
                 pass
-            
-            logger.info(f"Successfully converted and read {len(paragraphs)} paragraphs from .doc file: {os.path.basename(doc_path)}")
+
+            logger.info(
+                f"Successfully converted and read {len(paragraphs)} paragraphs from .doc file: {os.path.basename(doc_path)}"
+            )
             return paragraphs
-            
+
         except Exception as e:
             # Clean up on error
             try:
@@ -217,10 +496,14 @@ def read_document_paragraphs(doc_path: str) -> List[str]:
             logger.error(f"Failed to convert/read .doc file {doc_path}: {e}")
             raise ValueError(f"Failed to read .doc file: {doc_path}. Error: {e}")
     else:
-        raise ValueError(f"Unsupported document format: {doc_path}. Only .docx and .doc files are supported.")
+        raise ValueError(
+            f"Unsupported document format: {doc_path}. Only .docx and .doc files are supported."
+        )
 
 
-def extract_government_body_name(paragraphs: List[str], filename: str, prompt: str, config: Dict) -> Optional[str]:
+def extract_government_body_name(
+    paragraphs: List[str], filename: str, prompt: str, config: Dict
+) -> Optional[str]:
     """Extract government body name using AI."""
     context_paragraphs = paragraphs[:150]
     full_text = "\n".join(p.strip() for p in context_paragraphs)
@@ -243,8 +526,8 @@ def extract_government_body_name(paragraphs: List[str], filename: str, prompt: s
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": full_text},
                 ],
-                "temperature": config['ai_temperature'],
-                "max_completion_tokens": config['ai_max_tokens'],
+                "temperature": config["ai_temperature"],
+                "max_completion_tokens": config["ai_max_tokens"],
                 "top_p": 1,
                 "frequency_penalty": 0,
                 "presence_penalty": 0,
@@ -253,7 +536,9 @@ def extract_government_body_name(paragraphs: List[str], filename: str, prompt: s
             if config["ai_mode"] != "Локальный":
                 api_args["response_format"] = {"type": "json_object"}
 
-            logger.debug(f"Sending AI request for {filename} (attempt {attempt + 1}/{max_retries})")
+            logger.debug(
+                f"Sending AI request for {filename} (attempt {attempt + 1}/{max_retries})"
+            )
             response = client.chat.completions.create(**api_args)
 
             content = response.choices[0].message.content
@@ -270,7 +555,9 @@ def extract_government_body_name(paragraphs: List[str], filename: str, prompt: s
                 logger.warning(f"Invalid response format for {filename}")
 
         except (APIConnectionError, RateLimitError, APITimeoutError) as e:
-            logger.warning(f"AI API error for {filename} (attempt {attempt + 1}/{max_retries}): {type(e).__name__}")
+            logger.warning(
+                f"AI API error for {filename} (attempt {attempt + 1}/{max_retries}): {type(e).__name__}"
+            )
             if attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
@@ -288,13 +575,19 @@ def parse_government_hierarchy(full_name: str) -> Dict[str, Optional[str]]:
 
     # Keywords that indicate parent organization
     parent_keywords = [
-        "Министерства", "Агентства", "Комитета", "Департамента", "Управления"
+        "Министерства",
+        "Агентства",
+        "Комитета",
+        "Департамента",
+        "Управления",
     ]
 
     normalized_name = " ".join(full_name.split())
 
     for keyword in parent_keywords:
-        match = re.search(r"\b" + re.escape(keyword) + r"\b", normalized_name, re.IGNORECASE)
+        match = re.search(
+            r"\b" + re.escape(keyword) + r"\b", normalized_name, re.IGNORECASE
+        )
         if match:
             split_index = match.start()
 
@@ -324,41 +617,42 @@ def convert_to_nominative(word: str) -> str:
 def extract_functions(paragraphs: List[str]) -> Tuple[List[str], str]:
     """Extract function texts from document."""
     in_section = False
-    functions = []
+    collected_raw: List[str] = []
 
     for raw in paragraphs:
-        if not raw:
+        if raw is None:
             continue
 
         text = " ".join(raw.split())
-        low = text.lower()
-
-        if not in_section:
-
-            if re.match(r"^\s*(?:\d+\.?\s*)?функции:?\s*$", low):
-                in_section = True
-                logger.debug(f"Found functions section header: {text[:100]}")
-                continue
+        if not text:
             continue
 
-        # Stop at section headers
-        if re.match(r"^\s*глава\s+\d+", low) or re.match(r"^\s*раздел\s+\d+", low):
+        if not in_section:
+            if FUNCTION_HEADER_PATTERN.match(text):
+                in_section = True
+                logger.debug(f"Found functions section header: {text[:100]}")
+            continue
+
+        if SECTION_TERMINATOR_PATTERN.match(text):
             break
 
-        if text.strip():
-            functions.append(text.strip())
+        if FUNCTION_HEADER_PATTERN.match(text):
+            logger.debug(
+                "Encountered nested functions header inside section; skipping line"
+            )
+            continue
 
-    # Clean and filter out empty functions
+        collected_raw.append(text.strip())
+
     cleaned_functions = []
-    for f in functions:
-        if f:
-            cleaned = clean_function_text(f)
-            if cleaned and cleaned.strip():  # Only include non-empty after cleaning
-                cleaned_functions.append(cleaned)
-    
+    for item in collected_raw:
+        cleaned = clean_function_text(item)
+        if cleaned and cleaned.strip():
+            cleaned_functions.append(cleaned)
+
     if not in_section:
         return [], "HEADER_NOT_FOUND"
-    if in_section and not cleaned_functions:
+    if not cleaned_functions:
         return [], "NO_ITEMS_FOUND"
     return cleaned_functions, "OK"
 
@@ -406,7 +700,28 @@ def create_government_abbreviation(name: str) -> str:
         return tokens[0]
 
     # Create abbreviation from first letters, skipping common words
-    stop_words = {"и", "по", "о", "в", "на", "об", "с", "при", "для", "над", "под", "из", "во", "со", "республика", "республики", "казахстан", "казахстана", "государственного", "учреждения"}
+    stop_words = {
+        "и",
+        "по",
+        "о",
+        "в",
+        "на",
+        "об",
+        "с",
+        "при",
+        "для",
+        "над",
+        "под",
+        "из",
+        "во",
+        "со",
+        "республика",
+        "республики",
+        "казахстан",
+        "казахстана",
+        "государственного",
+        "учреждения",
+    }
 
     letters = [w[0].upper() for w in tokens if w and w.lower() not in stop_words]
     return "".join(letters) or (tokens[0][:3].upper())
@@ -431,20 +746,17 @@ def create_ai_client(config: Dict) -> OpenAI:
     """Create AI client based on configuration."""
     if config["ai_mode"] == "online":
         return OpenAI(
-            api_key=config["ai_api_key"],
-            http_client=httpx.Client(timeout=60.0)
+            api_key=config["ai_api_key"], http_client=httpx.Client(timeout=60.0)
         )
     elif config["ai_mode"] == "local":
         return OpenAI(
             base_url=prepare_api_base_url(config["embedding_server"]),
             api_key="not-needed",
-            http_client=httpx.Client(timeout=60.0)
+            http_client=httpx.Client(timeout=60.0),
         )
     else:  # АП mode
         return OpenAI(
             base_url=prepare_api_base_url(config["embedding_server"]),
             api_key=config["ai_api_key"],
-            http_client=httpx.Client(timeout=60.0)
+            http_client=httpx.Client(timeout=60.0),
         )
-
-
