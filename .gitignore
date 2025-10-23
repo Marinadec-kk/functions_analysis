@@ -220,7 +220,12 @@ input_documents
 scripts
 md
 .env
+<<<<<<< HEAD
+
+legacy
+=======
 uv.lock
 results
 legacy
 files
+>>>>>>> 85517470bf6f4c64a8ae03ae1b8a8ef86067decb
